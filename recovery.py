@@ -98,7 +98,6 @@ def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # 
 
 
 def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout):
-    # Copy once
     imputed = op_sales_masked.copy()
 
     # ---------- SERIES IDS ----------
@@ -121,17 +120,10 @@ def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout
         valid_mask = ~np.isnan(values)
 
         # sums per series
-        sums = np.bincount(
-            series_codes[valid_mask],
-            weights=values[valid_mask],
-            minlength=n_series
-        )
+        sums = np.bincount(series_codes[valid_mask], weights=values[valid_mask], minlength=n_series)
 
         # counts per series
-        counts = np.bincount(
-            series_codes[valid_mask],
-            minlength=n_series
-        )
+        counts = np.bincount(series_codes[valid_mask], minlength=n_series)
 
         means = sums / np.maximum(counts, 1)
 
@@ -157,7 +149,6 @@ def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout
 
     recovered_daily = recovered_sum - hours_sale_with_stockout
 
-    history = history.copy()
     history["recovered_daily_sales"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
@@ -167,8 +158,30 @@ def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout
 def weekday_mean(history): # Durchschnitt der gleichen Wochentage - Laura
     return
 
-def hourly_mean(history): # Durchschnitt der gleichen Stunde - Nils
-    return
+def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt der gleichen Stunde - Nils
+    imputed = op_sales_masked.copy()
+
+    global_hourly_means = np.nanmean(imputed, axis=0)
+
+    nan_mask = np.isnan(imputed)
+
+    replacement_values = np.tile(global_hourly_means, (imputed.shape[0], 1))
+
+    imputed[nan_mask] = replacement_values[nan_mask]
+
+    imputed = np.maximum(imputed, 0)
+
+    imputed_count = nan_mask.sum()
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = recovered_sum - hours_sale_with_stockout
+
+    history["recovered_daily_sales"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
 
 
 # Moving averages: - Laura
