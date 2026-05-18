@@ -338,6 +338,84 @@ def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alp
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
 
+def exponential_moving_average_series(history, op_stock, op_sales, op_sales_masked, alpha=0.3):  # EMA pro series_id - Laura
+
+    visible_sum = np.nansum(
+        np.where(op_stock == 0, op_sales, 0),
+        axis=1
+    )
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = 0
+
+    # Jede Stunde einzeln
+    for h in range(16):
+
+        # Jede Serie einzeln
+        for sid in history["series_id"].unique():
+
+            # Zeilen dieser Serie
+            series_mask = history["series_id"] == sid
+
+            # Werte dieser Stunde UND dieser Serie
+            col = imputed[series_mask, h]
+
+            # Fehlende Werte finden
+            mask = np.isnan(col)
+
+            # Positionen fehlender Werte
+            missing_idx = np.where(mask)[0]
+
+            for idx in missing_idx:
+
+                # Frühere sichtbare Werte derselben Serie
+                previous_values = col[:idx]
+
+                previous_values = previous_values[
+                    ~np.isnan(previous_values)
+                ]
+
+                # Falls sichtbare Werte existieren
+                if len(previous_values) > 0:
+
+                    # EMA berechnen
+                    ema = previous_values[0]
+
+                    for val in previous_values[1:]:
+                        ema = alpha * val + (1 - alpha) * ema
+
+                    mean_value = ema
+
+                else:
+                    # Fallback: Durchschnitt dieser Serie/Stunde
+                    mean_value = np.nanmean(col)
+
+                # Fehlenden Wert ersetzen
+                col[idx] = mean_value
+
+                imputed_count += 1
+
+            # Zurückschreiben
+            imputed[series_mask, h] = col
+
+    # Rebuild corrected daily target
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    outside_slice = np.maximum(
+        history["sale_amount"].values.astype(np.float32) - visible_sum,
+        0
+    )
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Alpha used: {alpha}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+
 
 # Seasonal imputation: - Nils
 
