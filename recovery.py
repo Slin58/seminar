@@ -177,6 +177,9 @@ def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
 
+def weekday_per_series_mean():
+    return
+
 def weekday_mean(history, op_stock, op_sales, op_sales_masked):  # Durchschnitt gleicher Wochentage - Laura
     # Wochentag hinzufügen
     history["weekday"] = history["dt"].dt.weekday
