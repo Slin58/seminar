@@ -24,7 +24,7 @@ def random_sampling(history, op_sales_masked, hours_sale_with_stockout, rng): # 
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = recovered_sum - hours_sale_with_stockout
 
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_random_sampling"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
@@ -49,11 +49,12 @@ def global_mean(history, op_stock, op_sales, op_sales_masked):  # globaler Durch
         0
     )
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_global_mean"] = recovered_daily
+
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Global mean used: {mean_value:.4f}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_global_mean'].mean():.4f}")
 
 def per_series_mean(history): # Durchschnitt derselben series_id - Nils
     recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
@@ -62,64 +63,12 @@ def per_series_mean(history): # Durchschnitt derselben series_id - Nils
 
     recovered_daily = recovered_daily.fillna(series_mean)
 
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_per_series_mean"] = recovered_daily
 
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_per_series_mean'].mean():.4f}")
 
 def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt derselben series_id & derselben Stunde - Nils
-
-    imputed = op_sales_masked.copy()
-    imputed_count = 0
-
-    # unique series
-    unique_series = history["series_id"].unique()
-
-    # process each series separately
-    for sid in unique_series:
-        # rows belonging to this series
-        series_mask = history["series_id"].values == sid
-
-        # hourly matrix for this series
-        series_data = imputed[series_mask]
-
-        # calculate hourly mean ignoring NaNs
-        hourly_means = np.nanmean(series_data, axis=0)
-
-        # fallback if an entire hour is NaN
-        global_hourly_means = np.nanmean(imputed, axis=0)
-        hourly_means = np.where(
-            np.isnan(hourly_means),
-            global_hourly_means,
-            hourly_means
-        )
-
-        # impute hour by hour
-        for h in range(16):
-
-            col = series_data[:, h]
-
-            # missing values
-            missing_mask = np.isnan(col)
-            n_miss = missing_mask.sum()
-
-            if n_miss > 0:
-                col[missing_mask] = np.maximum(0, hourly_means[h])
-                imputed_count += n_miss
-
-            series_data[:, h] = col
-
-        imputed[series_mask] = series_data
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    history["recovered_daily_sales"] = recovered_sum - hours_sale_with_stockout
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
-
-
-def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout):
     imputed = op_sales_masked.copy()
 
     # ---------- SERIES IDS ----------
@@ -171,11 +120,11 @@ def hour_per_series_mean_fast(history, op_sales_masked, hours_sale_with_stockout
 
     recovered_daily = recovered_sum - hours_sale_with_stockout
 
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_hour_per_series_mean"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_hour_per_series_mean'].mean():.4f}")
 
 def weekday_per_series_mean():
     return
@@ -220,10 +169,11 @@ def weekday_mean(history, op_stock, op_sales, op_sales_masked):  # Durchschnitt 
         0
     )
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_weekday_mean"] = recovered_daily
+
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_mean'].mean():.4f}")
 
 def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
@@ -244,11 +194,11 @@ def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschn
 
     recovered_daily = recovered_sum - hours_sale_with_stockout
 
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_hourly_mean"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_hourly_mean'].mean():.4f}")
 
 
 # Moving averages: - Laura
@@ -287,11 +237,11 @@ def rolling_mean(history, op_stock, op_sales, op_sales_masked, window=7):  # SMA
         0
     )
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_rolling_mean"] = recovered_daily
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Window size used: {window}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_rolling_mean'].mean():.4f}")
 
 def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alpha=0.3):  # EMA - Laura
     visible_sum = np.nansum(
@@ -332,11 +282,11 @@ def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alp
         0
     )
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_exponential_moving_average"] = recovered_daily
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average'].mean():.4f}")
 
 def exponential_moving_average_series(history, op_stock, op_sales, op_sales_masked, alpha=0.3):  # EMA pro series_id - Laura
 
@@ -409,12 +359,12 @@ def exponential_moving_average_series(history, op_stock, op_sales, op_sales_mask
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales"] = recovered_daily
+    history["recovered_daily_sales_exponential_moving_average_series"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}")
 
 
 # Seasonal imputation: - Nils
