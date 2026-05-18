@@ -28,7 +28,7 @@ def random_sampling(history, op_sales_masked, hours_sale_with_stockout, rng): # 
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_random_sampling'].mean():.4f}")
 
 def global_mean(history): # globaler Durschnitt - Laura
     return
@@ -43,7 +43,7 @@ def per_series_mean(history): # Durchschnitt derselben series_id - Nils
     history["recovered_daily_sales"] = recovered_daily
 
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_per_series_mean'].mean():.4f}")
 
 def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt derselben series_id & derselben Stunde - Nils
 
