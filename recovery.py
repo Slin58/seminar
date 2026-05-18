@@ -122,44 +122,45 @@ def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnit
 def weekday_per_series_mean():
     return
 
-def weekday_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # Durchschnitt gleicher Wochentage - Laura
-    # Wochentag hinzufügen
+def weekday_mean(history, op_sales_masked, outside_slice): # Durchschnitt gleicher Wochentage - Laura
     history["weekday"] = history["dt"].dt.weekday
 
     imputed = op_sales_masked.copy()
-    imputed_count = 0
-    # Jede Stunde einzeln
-    for h in range(16):
-        # Alle Werte dieser Stunde
+    weekdays = history["weekday"].values
+    n_hours = imputed.shape[1]
+
+    # global fallback pro Stunde
+    global_hour_means = np.nanmean(imputed, axis=0)
+
+    imputed_count = np.isnan(imputed).sum()
+
+    for h in range(n_hours):
         col = imputed[:, h]
-        # Fehlende Werte finden
-        mask = np.isnan(col)
-        # Für jede fehlende Stelle
-        missing_idx = np.where(mask)[0]
-        for idx in missing_idx:
-            # Wochentag dieser Zeile
-            wd = history.iloc[idx]["weekday"]
-            # Alle sichtbaren Werte gleicher Wochentage
-            same_weekday_mask = (
-                (history["weekday"] == wd).values &
-                (~np.isnan(col))
-            )
-            pool = col[same_weekday_mask]
-            # Falls Werte existieren
-            if len(pool) > 0:
-                mean_value = np.mean(pool)
-            else:
-                mean_value = np.nanmean(col)
-            imputed[idx, h] = mean_value
-            imputed_count += 1
-    # Rebuild corrected daily target
+
+        for wd in range(7):
+            wd_mask = weekdays == wd
+
+            mean_value = np.nanmean(col[wd_mask])
+
+            if np.isnan(mean_value):
+                mean_value = global_hour_means[h]
+
+            nan_mask = wd_mask & np.isnan(col)
+
+            col[nan_mask] = mean_value
+
+        imputed[:, h] = col
+
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
+
     history["recovered_daily_sales_weekday_mean"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_mean'].mean():.4f}")
+
+   
 
 def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
