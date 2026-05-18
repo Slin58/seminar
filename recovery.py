@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 # Einfache Imputation Methoden:
-def random_sampling(history, op_sales_masked, hours_sale_with_stockout, rng): # Simple recovery: random pool sampling
+def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
     imputed = op_sales_masked.copy()
     imputed_count = 0
     for h in range(16):
@@ -22,7 +22,7 @@ def random_sampling(history, op_sales_masked, hours_sale_with_stockout, rng): # 
 
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = recovered_sum - hours_sale_with_stockout
+    recovered_daily = recovered_sum + outside_slice
 
     history["recovered_daily_sales_random_sampling"] = recovered_daily
 
@@ -30,11 +30,8 @@ def random_sampling(history, op_sales_masked, hours_sale_with_stockout, rng): # 
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_random_sampling'].mean():.4f}")
 
-def global_mean(history, op_stock, op_sales, op_sales_masked):  # globaler Durchschnitt - Laura
-    visible_sum = np.nansum(
-        np.where(op_stock == 0, op_sales, 0),
-        axis=1
-    )
+def global_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # globaler Durchschnitt - Laura
+
     imputed = op_sales_masked.copy()
     # Durchschnitt über alle sichtbaren Stundenwerte
     mean_value = np.nanmean(imputed)
@@ -44,10 +41,6 @@ def global_mean(history, op_stock, op_sales, op_sales_masked):  # globaler Durch
     imputed[mask] = mean_value
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-    outside_slice = np.maximum(
-        history["sale_amount"].values.astype(np.float32) - visible_sum,
-        0
-    )
     recovered_daily = outside_slice + recovered_sum
     history["recovered_daily_sales_global_mean"] = recovered_daily
 
@@ -68,7 +61,7 @@ def per_series_mean(history): # Durchschnitt derselben series_id - Nils
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_per_series_mean'].mean():.4f}")
 
-def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt derselben series_id & derselben Stunde - Nils
+def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
     imputed = op_sales_masked.copy()
 
     # ---------- SERIES IDS ----------
@@ -111,14 +104,14 @@ def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # 
 
     imputed[nan_mask] = replacement_values[nan_mask]
 
-    imputed = np.maximum(imputed, 0)
+    imputed = np.maximum(imputed, 0) # 2, 3, nan -> 2, 3, 3
 
     imputed_count = nan_mask.sum()
 
     # ---------- REBUILD DAILY SALES ----------
     recovered_sum = np.nansum(imputed, axis=1)
 
-    recovered_daily = recovered_sum - hours_sale_with_stockout
+    recovered_daily = recovered_sum + outside_slice
 
     history["recovered_daily_sales_hour_per_series_mean"] = recovered_daily
 
@@ -129,13 +122,10 @@ def hour_per_series_mean(history, op_sales_masked, hours_sale_with_stockout): # 
 def weekday_per_series_mean():
     return
 
-def weekday_mean(history, op_stock, op_sales, op_sales_masked):  # Durchschnitt gleicher Wochentage - Laura
+def weekday_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # Durchschnitt gleicher Wochentage - Laura
     # Wochentag hinzufügen
     history["weekday"] = history["dt"].dt.weekday
-    visible_sum = np.nansum(
-        np.where(op_stock == 0, op_sales, 0),
-        axis=1
-    )
+
     imputed = op_sales_masked.copy()
     imputed_count = 0
     # Jede Stunde einzeln
@@ -164,10 +154,6 @@ def weekday_mean(history, op_stock, op_sales, op_sales_masked):  # Durchschnitt 
             imputed_count += 1
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-    outside_slice = np.maximum(
-        history["sale_amount"].values.astype(np.float32) - visible_sum,
-        0
-    )
     recovered_daily = outside_slice + recovered_sum
     history["recovered_daily_sales_weekday_mean"] = recovered_daily
 
@@ -175,7 +161,7 @@ def weekday_mean(history, op_stock, op_sales, op_sales_masked):  # Durchschnitt 
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_mean'].mean():.4f}")
 
-def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschnitt der gleichen Stunde - Nils
+def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
 
     global_hourly_means = np.nanmean(imputed, axis=0)
@@ -192,7 +178,7 @@ def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschn
 
     recovered_sum = np.nansum(imputed, axis=1)
 
-    recovered_daily = recovered_sum - hours_sale_with_stockout
+    recovered_daily = recovered_sum + outside_slice
 
     history["recovered_daily_sales_hourly_mean"] = recovered_daily
 
@@ -202,11 +188,7 @@ def hourly_mean(history, op_sales_masked, hours_sale_with_stockout): # Durchschn
 
 
 # Moving averages: - Laura
-def rolling_mean(history, op_stock, op_sales, op_sales_masked, window=7):  # SMA / Rolling Mean - Laura
-    visible_sum = np.nansum(
-        np.where(op_stock == 0, op_sales, 0),
-        axis=1
-    )
+def rolling_mean(history, op_stock, op_sales, op_sales_masked, outside_slice, window=7):  # SMA / Rolling Mean - Laura
     imputed = op_sales_masked.copy()
     imputed_count = 0
     # Jede Stunde einzeln
@@ -232,10 +214,6 @@ def rolling_mean(history, op_stock, op_sales, op_sales_masked, window=7):  # SMA
             imputed_count += 1
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-    outside_slice = np.maximum(
-        history["sale_amount"].values.astype(np.float32) - visible_sum,
-        0
-    )
     recovered_daily = outside_slice + recovered_sum
     history["recovered_daily_sales_rolling_mean"] = recovered_daily
     print(f"Imputed {imputed_count:,} hourly cells")
@@ -243,11 +221,7 @@ def rolling_mean(history, op_stock, op_sales, op_sales_masked, window=7):  # SMA
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_rolling_mean'].mean():.4f}")
 
-def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alpha=0.3):  # EMA - Laura
-    visible_sum = np.nansum(
-        np.where(op_stock == 0, op_sales, 0),
-        axis=1
-    )
+def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, outside_slice, alpha=0.3):  # EMA - Laura
     imputed = op_sales_masked.copy()
     imputed_count = 0
     # Jede Stunde einzeln
@@ -277,10 +251,6 @@ def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alp
             imputed_count += 1
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-    outside_slice = np.maximum(
-        history["sale_amount"].values.astype(np.float32) - visible_sum,
-        0
-    )
     recovered_daily = outside_slice + recovered_sum
     history["recovered_daily_sales_exponential_moving_average"] = recovered_daily
     print(f"Imputed {imputed_count:,} hourly cells")
@@ -288,12 +258,7 @@ def exponential_moving_average(history, op_stock, op_sales, op_sales_masked, alp
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average'].mean():.4f}")
 
-def exponential_moving_average_series(history, op_stock, op_sales, op_sales_masked, alpha=0.3):  # EMA pro series_id - Laura
-
-    visible_sum = np.nansum(
-        np.where(op_stock == 0, op_sales, 0),
-        axis=1
-    )
+def exponential_moving_average_series(history, op_stock, op_sales, op_sales_masked, outside_slice, alpha=0.3):  # EMA pro series_id - Laura
 
     imputed = op_sales_masked.copy()
 
@@ -351,11 +316,6 @@ def exponential_moving_average_series(history, op_stock, op_sales, op_sales_mask
 
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-
-    outside_slice = np.maximum(
-        history["sale_amount"].values.astype(np.float32) - visible_sum,
-        0
-    )
 
     recovered_daily = outside_slice + recovered_sum
 
