@@ -66,52 +66,31 @@ def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnit
     # ---------- SERIES IDS ----------
     series_codes, unique_series = pd.factorize(history["series_id"], sort=False)
     n_series = len(unique_series)
-
     n_rows, n_hours = imputed.shape
 
-    # ---------- GLOBAL HOURLY MEANS ----------
-    global_hourly_means = np.nanmean(imputed, axis=0)
+    # ---------- GLOBAL HOURLY MEANS (fallback) ----------
+    global_hourly_means = np.nanmean(imputed, axis=0)  # (n_hours,)
 
-    # ---------- COMPUTE PER-SERIES HOURLY MEANS ----------
-    # result shape: (n_series, n_hours)
-    series_hourly_means = np.full((n_series, n_hours), np.nan)
+    # ---------- PER-SERIES HOURLY MEANS (vectorized) ----------
+    valid = ~np.isnan(imputed)  # (n_rows, n_hours)
 
-    for h in range(n_hours):
+    sums   = np.zeros((n_series, n_hours))
+    counts = np.zeros((n_series, n_hours))
 
-        values = imputed[:, h]
+    np.add.at(sums,   series_codes, np.where(valid, imputed, 0))
+    np.add.at(counts, series_codes, valid.astype(float))
 
-        valid_mask = ~np.isnan(values)
-
-        # sums per series
-        sums = np.bincount(series_codes[valid_mask], weights=values[valid_mask], minlength=n_series)
-
-        # counts per series
-        counts = np.bincount(series_codes[valid_mask], minlength=n_series)
-
-        means = sums / np.maximum(counts, 1)
-
-        # fallback to global mean if no observations
-        means[counts == 0] = global_hourly_means[h]
-
-        series_hourly_means[:, h] = means
+    with np.errstate(invalid="ignore"):
+        series_hourly_means = np.where(counts > 0, sums / counts, global_hourly_means)
 
     # ---------- IMPUTE ----------
     nan_mask = np.isnan(imputed)
-
-    # build replacement matrix directly
-    replacement_values = series_hourly_means[series_codes]
-
-    imputed[nan_mask] = replacement_values[nan_mask]
-
-    imputed = np.maximum(imputed, 0) # 2, 3, nan -> 2, 3, 3
-
+    imputed[nan_mask] = series_hourly_means[series_codes][nan_mask]
+    imputed = np.maximum(imputed, 0)
     imputed_count = nan_mask.sum()
 
     # ---------- REBUILD DAILY SALES ----------
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = recovered_sum + outside_slice
-
+    recovered_daily = np.nansum(imputed, axis=1) + outside_slice
     history["recovered_daily_sales_hour_per_series_mean"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
@@ -367,10 +346,76 @@ def exponential_moving_average_series(history, op_sales_masked, outside_slice, a
 #     print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}")
 
 
-# Seasonal imputation: - Nils
+# Seasonal imputation: - Nils # TODO ist das nicht das gleiche, wie weekday_mean?
+def seasonal_mean(history):  # Durchschnitt desselben Wochentags - Nils
+    recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
 
-def seasonal_naive(history): # Vorhersage = Wert der Vorwoche (gleicher Wochentag + gleiche Stunde)
-    return
+    dayofweek = pd.to_datetime(history["dt"]).dt.dayofweek
+    hour = pd.to_datetime(history["dt"]).dt.hour
+
+    seasonal_key = dayofweek.astype(str) + "_" + hour.astype(str)
+    seasonal_mean = recovered_daily.groupby(seasonal_key).transform("mean")
+
+    recovered_daily = recovered_daily.fillna(seasonal_mean)
+
+    history["recovered_daily_sales_seasonal_mean"] = recovered_daily
+
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_seasonal_mean'].mean():.4f}")
+
+def hour_per_seasonal_mean(history, op_sales_masked, outside_slice):  # Durchschnitt desselben Wochentags & derselben Stunde - Nils
+    imputed = op_sales_masked.copy()
+
+    # ---------- SEASONAL KEYS (weekday x hour) ----------
+    dayofweek = pd.to_datetime(history["dt"]).dt.dayofweek.values  # 0–6
+    n_rows, n_hours = imputed.shape
+
+    # seasonal_code = weekday * n_hours + hour_index → unique key per (weekday, hour) combo
+    hour_indices = np.arange(n_hours)  # 0..n_hours-1
+    seasonal_codes_2d = dayofweek[:, None] * n_hours + hour_indices[None, :]  # (n_rows, n_hours)
+    n_seasonal = 7 * n_hours
+
+    # ---------- GLOBAL HOURLY MEANS (fallback) ----------
+    global_hourly_means = np.nanmean(imputed, axis=0)
+
+    # ---------- COMPUTE PER-SEASONAL MEANS ----------
+    seasonal_means_flat = np.full(n_seasonal, np.nan)
+
+    for h in range(n_hours):
+        values = imputed[:, h]
+        valid_mask = ~np.isnan(values)
+        codes = seasonal_codes_2d[:, h]  # weekday * n_hours + h
+
+        sums = np.bincount(codes[valid_mask], weights=values[valid_mask], minlength=n_seasonal)
+        counts = np.bincount(codes[valid_mask], minlength=n_seasonal)
+
+        means = sums / np.maximum(counts, 1)
+        means[counts == 0] = global_hourly_means[h]  # fallback
+
+        # only write the codes that appear in this hour column
+        seasonal_means_flat[codes] = means[codes]
+
+    # ---------- IMPUTE ----------
+    nan_mask = np.isnan(imputed)
+
+    replacement_values = seasonal_means_flat[seasonal_codes_2d]  # (n_rows, n_hours)
+
+    imputed[nan_mask] = replacement_values[nan_mask]
+
+    imputed = np.maximum(imputed, 0)
+
+    imputed_count = nan_mask.sum()
+
+    # ---------- REBUILD DAILY SALES ----------
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = recovered_sum + outside_slice
+
+    history["recovered_daily_sales_hour_per_seasonal_mean"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_hour_per_seasonal_mean'].mean():.4f}")
 
 # Zeitreihenbasierte Recovery-Methoden: - Laura
 
