@@ -30,8 +30,7 @@ def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple reco
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_random_sampling'].mean():.4f}")
 
-def global_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # globaler Durchschnitt - Laura
-
+def global_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # globaler Durchschnitt - TODO übergebene Variabeln anpassen
     imputed = op_sales_masked.copy()
     # Durchschnitt über alle sichtbaren Stundenwerte
     mean_value = np.nanmean(imputed)
