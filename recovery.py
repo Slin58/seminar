@@ -449,11 +449,196 @@ def iterative(history): # Iterative Imputation (z.B. MICE)
 
 # Spezifische Demandrevovery Modelle: - Nils
 
-def lost_sales_model(history):
+def lost_sales_model(history): # was ist das? Laut ChatGPT ein Überbegriff für Modelle, die versuchen verlorene Umsätze zu schätzen, z.B. mit Random Forest oder XGBoost. 
     return
 
-def tobit_model(history): 
-    return
+# test letztes von Claude AI
+def tobit_model(history):
+    from scipy.optimize import minimize
+    from scipy.special import ndtr, log_ndtr
+
+    # ---------- FEATURES ----------
+    hours_matrix = np.vstack(history["hours_sale"].values)
+
+    # Summarise the 24-hour vector into 4 interpretable features
+    # instead of 24 raw columns — reduces parameters from 32 to 12,
+    # much better identified on typical product-level sample sizes
+    hours_stock = np.vstack(history["hours_stock_status"].values)  # (n, 24)
+    peak_hours   = slice(9, 21)   # 09:00–20:00, main selling window
+
+    hours_features = pd.DataFrame({
+        "peak_sales":      hours_matrix[:, peak_hours].sum(axis=1),
+        "offpeak_sales":   hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
+        "peak_stockout_h": hours_stock[:, peak_hours].sum(axis=1),   # key censoring severity
+        "avail_frac":      1 - history["stock_hour6_22_cnt"].values / 16,  # fraction of 6-22 available
+    }, index=history.index)
+
+    base_df = pd.DataFrame({
+        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek,
+        "temperature": history["avg_temperature"],
+        "humidity":    history["avg_humidity"],
+        "wind":        history["avg_wind_level"],
+        "precpt":      history["precpt"],        # was missing — strong demand driver
+        "holiday":     history["holiday_flag"],
+        "activity":    history["activity_flag"],
+        "discount":    history["discount"],
+        "const":       1.0,
+    }, index=history.index).fillna(0)
+
+    X           = pd.concat([base_df, hours_features], axis=1).values.astype(np.float64)
+    y           = history["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = history["is_censored"].values.astype(bool).ravel()
+
+    obs_mask         = ~is_censored
+    X_obs, y_obs     = X[obs_mask], y[obs_mask]
+    X_cen            = X[is_censored]
+
+    # Partial censoring weights: days that were out-of-stock for longer
+    # get a stronger likelihood pull toward the censored branch
+    avail_frac_cen = hours_features["avail_frac"].values[is_censored].clip(1e-3, 1 - 1e-3)
+
+    _LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
+
+    def neg_log_likelihood(params):
+        beta      = params[:-1]
+        log_sigma = params[-1]
+        sigma     = np.exp(log_sigma)
+
+        mu_obs = X_obs @ beta
+        mu_cen = X_cen @ beta
+
+        z_obs  = (y_obs - mu_obs) / sigma
+        ll_obs = -log_sigma - _LOG_SQRT_2PI - 0.5 * (z_obs * z_obs)
+
+        # Weight censored log-likelihood by availability fraction:
+        # a day with avail_frac=0.1 (mostly out-of-stock) contributes
+        # more to the censored branch than one with avail_frac=0.9
+        ll_cen = log_ndtr(-mu_cen / sigma) * (1 - avail_frac_cen)
+
+        return -(ll_obs.sum() + ll_cen.sum())
+
+    n_features = X.shape[1]
+    result = minimize(
+        neg_log_likelihood,
+        np.zeros(n_features + 1, dtype=np.float64),
+        method="L-BFGS-B",
+        options={"maxiter": 1000, "ftol": 1e-9},
+    )
+
+    beta_hat  = result.x[:-1]
+    sigma_hat = float(np.exp(result.x[-1]))
+
+    # ---------- PREDICT ----------
+    mu_hat   = (X @ beta_hat).ravel()
+    alpha    = mu_hat / sigma_hat
+    pdf_a    = np.exp(-0.5 * alpha * alpha) / np.sqrt(2 * np.pi)
+    cdf_a    = ndtr(alpha)
+    lambda_  = pdf_a / np.maximum(cdf_a, 1e-12)
+
+    e_y_star = mu_hat + sigma_hat * lambda_
+    history["recovered_daily_sales_tobit"] = np.where(
+        is_censored, np.maximum(e_y_star, 0), y
+    )
+
+    print(f"Converged: {result.success} | {result.message}")
+    print(f"sigma_hat: {sigma_hat:.4f}")
+    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:  {history['recovered_daily_sales_tobit'].mean():.4f}")
+
+import numpy as np
+import pandas as pd
+from scipy.optimize import minimize
+from scipy.special import ndtr, log_ndtr
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+
+# ── per-series worker (must be top-level for pickling) ──────────────────────
+def _fit_one_series(args):
+    (store_id, product_id), df = args
+
+    df = df.reset_index(drop=True)
+    n  = len(df)
+
+    # need enough obs to identify the model
+    if n < 15:
+        return store_id, product_id, None, "too_few_rows"
+
+    # ── features ────────────────────────────────────────────────────────────
+    hours_matrix = np.vstack(df["hours_sale"].values)
+    hours_stock  = np.vstack(df["hours_stock_status"].values)
+    peak         = slice(9, 21)
+
+    hours_features = np.column_stack([
+        hours_matrix[:, peak].sum(axis=1),
+        hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
+        hours_stock[:, peak].sum(axis=1),
+        np.clip(1 - df["stock_hour6_22_cnt"].values / 16, 1e-3, 1 - 1e-3),
+    ])
+
+    dt = pd.to_datetime(df["dt"])
+    base = np.column_stack([
+        dt.dt.dayofweek.values,
+        df["avg_temperature"].fillna(0).values,
+        df["avg_humidity"].fillna(0).values,
+        df["avg_wind_level"].fillna(0).values,
+        df["precpt"].fillna(0).values,
+        df["holiday_flag"].values,
+        df["activity_flag"].values,
+        df["discount"].values,
+        np.ones(n),
+    ])
+
+    X           = np.hstack([base, hours_features]).astype(np.float64)
+    y           = df["sale_amount"].values.astype(np.float64)
+    is_censored = df["is_censored"].values.astype(bool)
+    obs_mask    = ~is_censored
+
+    if obs_mask.sum() < 5:
+        return store_id, product_id, None, "too_few_observed"
+
+    X_obs, y_obs       = X[obs_mask], y[obs_mask]
+    X_cen              = X[is_censored]
+    avail_frac_cen     = hours_features[is_censored, 3]
+    cen_weight         = (1 - avail_frac_cen)
+
+    LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
+
+    def neg_ll(params):
+        beta, log_sigma = params[:-1], params[-1]
+        sigma = np.exp(log_sigma)
+
+        z      = (y_obs - X_obs @ beta) / sigma
+        ll_obs = (-log_sigma - LOG_SQRT_2PI - 0.5 * z * z).sum()
+
+        if X_cen.shape[0] > 0:
+            ll_cen = (log_ndtr(-(X_cen @ beta) / sigma) * cen_weight).sum()
+        else:
+            ll_cen = 0.0
+
+        return -(ll_obs + ll_cen)
+
+    result = minimize(
+        neg_ll,
+        np.zeros(X.shape[1] + 1),
+        method="L-BFGS-B",
+        options={"maxiter": 1000, "ftol": 1e-9},
+    )
+
+    beta_hat  = result.x[:-1]
+    sigma_hat = np.exp(result.x[-1])
+
+    mu      = X @ beta_hat
+    alpha   = mu / sigma_hat
+    lambda_ = np.exp(-0.5 * alpha**2) / (np.sqrt(2 * np.pi) * np.maximum(ndtr(alpha), 1e-12))
+
+    recovered = np.where(is_censored, np.maximum(mu + sigma_hat * lambda_, 0), y)
+
+    out = df[["store_id", "product_id", "dt"]].copy()
+    out["recovered_daily_sales_tobit"] = recovered
+    out["converged"]                   = result.success
+
+    return store_id, product_id, out, "ok"
+
 
 def bayesian_model(history):
     return
