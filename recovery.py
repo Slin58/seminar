@@ -10,7 +10,8 @@ from scipy.special import ndtr, log_ndtr
 from scipy.stats import norm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
-
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
 
 # Einfache Imputation Methoden:
 def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
@@ -873,108 +874,108 @@ def _fit_one_series(args):
     return store_id, product_id, out, "ok"
 
 
-# def bayesian_model(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC - Nils # 7 min aber schlechter als raw_data
-#     # ---------- FEATURES (identisch zu Tobit) ----------
-#     hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
-#     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
-#                             index=history.index)
+def bayesian_model_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
+    # ---------- FEATURES (identisch zu Tobit) ----------
+    hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
+    hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
+                            index=history.index)
 
-#     base_df = pd.DataFrame({
-#         "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
-#         "temperature": history["avg_temperature"],
-#         "humidity":    history["avg_humidity"],
-#         "wind":        history["avg_wind_level"],
-#         "holiday":     history["holiday_flag"],
-#         "activity":    history["activity_flag"],
-#         "discount":    history["discount"],
-#         "const":       1.0,
-#     }, index=history.index).fillna(0)
+    base_df = pd.DataFrame({
+        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
+        "temperature": history["avg_temperature"],
+        "humidity":    history["avg_humidity"],
+        "wind":        history["avg_wind_level"],
+        "holiday":     history["holiday_flag"],
+        "activity":    history["activity_flag"],
+        "discount":    history["discount"],
+        "const":       1.0,
+    }, index=history.index).fillna(0)
 
-#     X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float32)
-#     y           = history["sale_amount"].values.astype(np.float32).ravel()
-#     is_censored = history["is_censored"].values.astype(bool).ravel()
+    X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float32)
+    y           = history["sale_amount"].values.astype(np.float32).ravel()
+    is_censored = history["is_censored"].values.astype(bool).ravel()
 
-#     obs = ~is_censored
-#     cen =  is_censored
-#     X_obs, X_cen = X[obs], X[cen]
-#     y_obs        = y[obs]
+    obs = ~is_censored
+    cen =  is_censored
+    X_obs, X_cen = X[obs], X[cen]
+    y_obs        = y[obs]
 
-#     n_features = X.shape[1]
+    n_features = X.shape[1]
 
-#     # ---------- LOG POSTERIOR ----------
-#     # Prior: beta ~ N(0, 10²), log_sigma ~ N(0, 1)
-#     def log_posterior(params):
-#         beta      = params[:-1].astype(np.float32)
-#         log_sigma = params[-1]
-#         sigma     = float(np.exp(log_sigma))
+    # ---------- LOG POSTERIOR ----------
+    # Prior: beta ~ N(0, 10²), log_sigma ~ N(0, 1)
+    def log_posterior(params):
+        beta      = params[:-1].astype(np.float32)
+        log_sigma = params[-1]
+        sigma     = float(np.exp(log_sigma))
 
-#         # --- log likelihood ---
-#         mu_obs  = (X_obs @ beta).ravel()
-#         r       = (y_obs - mu_obs) / sigma
-#         ll_obs  = -0.5 * (r ** 2).sum() - len(y_obs) * (np.log(sigma) + 0.5 * np.log(2 * np.pi))
+        # --- log likelihood ---
+        mu_obs  = (X_obs @ beta).ravel()
+        r       = (y_obs - mu_obs) / sigma
+        ll_obs  = -0.5 * (r ** 2).sum() - len(y_obs) * (np.log(sigma) + 0.5 * np.log(2 * np.pi))
 
-#         mu_cen  = (X_cen @ beta).ravel()
-#         alpha   = mu_cen / sigma
-#         ll_cen  = np.log(np.maximum(norm.cdf(alpha), 1e-12)).sum()
+        mu_cen  = (X_cen @ beta).ravel()
+        alpha   = mu_cen / sigma
+        ll_cen  = np.log(np.maximum(norm.cdf(alpha), 1e-12)).sum()
 
-#         ll = ll_obs + ll_cen
+        ll = ll_obs + ll_cen
 
-#         # --- log prior ---
-#         lp_beta      = -0.5 * (beta ** 2 / 100).sum()   # N(0, 10²)
-#         lp_log_sigma = -0.5 * log_sigma ** 2             # N(0, 1)
+        # --- log prior ---
+        lp_beta      = -0.5 * (beta ** 2 / 100).sum()   # N(0, 10²)
+        lp_log_sigma = -0.5 * log_sigma ** 2             # N(0, 1)
 
-#         return float(ll + lp_beta + lp_log_sigma)
+        return float(ll + lp_beta + lp_log_sigma)
 
-#     # ---------- METROPOLIS-HASTINGS ----------
-#     n_samples    = 2000
-#     n_burnin     = 500
-#     step_size    = 0.01
+    # ---------- METROPOLIS-HASTINGS ----------
+    n_samples    = 2000
+    n_burnin     = 500
+    step_size    = 0.01
 
-#     rng          = np.random.default_rng(42)
-#     params_curr  = np.zeros(n_features + 1, dtype=np.float64)
-#     lp_curr      = log_posterior(params_curr)
+    rng          = np.random.default_rng(42)
+    params_curr  = np.zeros(n_features + 1, dtype=np.float64)
+    lp_curr      = log_posterior(params_curr)
 
-#     samples      = np.empty((n_samples, n_features + 1), dtype=np.float32)
-#     n_accepted   = 0
+    samples      = np.empty((n_samples, n_features + 1), dtype=np.float32)
+    n_accepted   = 0
 
-#     print(f"Running MCMC: {n_burnin} burnin + {n_samples} samples...")
+    print(f"Running MCMC: {n_burnin} burnin + {n_samples} samples...")
 
-#     for i in range(n_burnin + n_samples):
-#         proposal = params_curr + rng.normal(0, step_size, size=params_curr.shape)
-#         lp_prop  = log_posterior(proposal)
+    for i in range(n_burnin + n_samples):
+        proposal = params_curr + rng.normal(0, step_size, size=params_curr.shape)
+        lp_prop  = log_posterior(proposal)
 
-#         # accept/reject
-#         if np.log(rng.uniform()) < lp_prop - lp_curr:
-#             params_curr = proposal
-#             lp_curr     = lp_prop
-#             if i >= n_burnin:
-#                 n_accepted += 1
+        # accept/reject
+        if np.log(rng.uniform()) < lp_prop - lp_curr:
+            params_curr = proposal
+            lp_curr     = lp_prop
+            if i >= n_burnin:
+                n_accepted += 1
 
-#         if i >= n_burnin:
-#             samples[i - n_burnin] = params_curr
+        if i >= n_burnin:
+            samples[i - n_burnin] = params_curr
 
-#     acceptance_rate = n_accepted / n_samples
+    acceptance_rate = n_accepted / n_samples
 
-#     # ---------- POSTERIOR MEAN ESTIMATE ----------
-#     beta_hat  = samples[:, :-1].mean(axis=0).astype(np.float32)
-#     sigma_hat = float(np.exp(samples[:, -1].mean()))
+    # ---------- POSTERIOR MEAN ESTIMATE ----------
+    beta_hat  = samples[:, :-1].mean(axis=0).astype(np.float32)
+    sigma_hat = float(np.exp(samples[:, -1].mean()))
 
-#     # ---------- PREDICT ----------
-#     mu_hat  = (X @ beta_hat).ravel()
-#     alpha   = mu_hat / sigma_hat
-#     lambda_ = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
+    # ---------- PREDICT ----------
+    mu_hat  = (X @ beta_hat).ravel()
+    alpha   = mu_hat / sigma_hat
+    lambda_ = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
 
-#     e_y_star  = mu_hat + sigma_hat * lambda_
-#     recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
+    e_y_star  = mu_hat + sigma_hat * lambda_
+    recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
 
-#     history["recovered_daily_sales_bayesian"] = recovered
+    history["recovered_daily_sales_bayesian"] = recovered
 
-#     print(f"Acceptance rate: {acceptance_rate:.3f} (ideal: 0.2–0.5)")
-#     print(f"sigma_hat: {sigma_hat:.4f}")
-#     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
-#     print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
+    print(f"Acceptance rate: {acceptance_rate:.3f} (ideal: 0.2–0.5)")
+    print(f"sigma_hat: {sigma_hat:.4f}")
+    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
     
-def bayesian_model(history):  # Bayesisches Modell mit NUTS - Nils
+def bayesian_model(history):  # Bayesisches Modell mit NUTS
     # ---------- FEATURES (identisch zu Tobit) ----------
     hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
@@ -1147,14 +1148,85 @@ def bayesian_model(history):  # Bayesisches Modell mit NUTS - Nils
     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
 
-def inventory_aware_model(history):
+def inventory_aware_model(history): # inventory aware model is a forecasting method
     return
 
 
 # Deep Learning basierte Recovery-Methoden: - Nils
 
-def autoencoder(history):
-    return
+def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8):
+    """
+    Autoencoder-based recovery using sklearn MLPRegressor (input == output).
+    - Trained only on fully uncensored days
+    - Reconstructs the full 16h profile for censored days
+    - Missing hours are replaced by the reconstruction
+    - Observed hours are kept as-is
+    """
+
+    # ── 1. Prepare data ──────────────────────────────────────────────────────
+    is_censored = history["is_censored"].values
+
+    clean_mask = is_censored == 0
+    clean_profiles = op_sales_masked[clean_mask]
+
+    # Drop rows with any NaN in clean set
+    valid = ~np.isnan(clean_profiles).any(axis=1)
+    clean_profiles = clean_profiles[valid]
+
+    if len(clean_profiles) < 32:
+        print("Not enough clean days to train autoencoder — skipping.")
+        history["recovered_daily_sales_autoencoder"] = np.nan
+        return
+
+    # ── 2. Normalize ─────────────────────────────────────────────────────────
+    scaler = StandardScaler()
+    clean_norm = scaler.fit_transform(clean_profiles)  # (n_clean, 16)
+
+    # ── 3. Train MLP as autoencoder (input == output) ────────────────────────
+    model = MLPRegressor(
+        hidden_layer_sizes=(32, latent_dim, 32),
+        activation="relu",
+        max_iter=epochs,
+        random_state=42,
+        early_stopping=True,
+        validation_fraction=0.1,
+    )
+    model.fit(clean_norm, clean_norm)
+    print(f"Autoencoder trained on {len(clean_profiles):,} clean days")
+
+    # ── 4. Impute censored hours ──────────────────────────────────────────────
+    imputed = op_sales_masked.copy()
+    hour_mean = scaler.mean_  # per-hour mean from scaler, used as neutral fill
+
+    imputed_count = 0
+
+    for i in range(len(imputed)):
+        row = imputed[i]
+        missing = np.isnan(row)
+
+        if not missing.any():
+            continue
+
+        # Fill NaNs with hour mean before passing through AE
+        row_filled = np.where(missing, hour_mean, row)
+        row_norm   = scaler.transform(row_filled.reshape(1, -1))
+
+        recon      = model.predict(row_norm)                  # (1, 16)
+        recon      = scaler.inverse_transform(recon).squeeze(0)  # denormalize
+
+        # Only replace missing hours
+        imputed[i, missing] = np.maximum(0, recon[missing])
+        imputed_count += missing.sum()
+
+    # ── 5. Rebuild daily totals ───────────────────────────────────────────────
+    recovered_sum   = np.nansum(imputed, axis=1)
+    recovered_daily = recovered_sum + outside_slice
+
+    history["recovered_daily_sales_autoencoder"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount:            {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales (autoenc):  {history['recovered_daily_sales_autoencoder'].mean():.4f}")
 
 def transformer(history): # SAITS, BRITS, GRIN, CSDI
     return
