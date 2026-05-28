@@ -59,11 +59,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_random_sampling",
     # },
 
-    # "global_mean": {
-    #     "func": recovery.global_mean,
-    #     "args": (history, op_stock_status, op_sales, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_global_mean",
-    # },
+    "global_mean": {
+        "func": recovery.global_mean,
+        "args": (history, op_stock_status, op_sales, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_global_mean",
+    },
 
     # "per_series_mean": {
     #     "func": recovery.per_series_mean,
@@ -161,6 +161,24 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_kalman_like",
     # },
 
+    # "stl_real": {
+    #     "func": recovery.stl_real,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_stl_real",
+    # },
+
+    # "stl_based": {
+    #     "func": recovery.stl_based,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_stl_based",
+    # },
+
+    # "knn": {
+    #     "func": recovery.knn,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_knn",
+    # },
+
     # "autoencoder": {
     #     "func": recovery.autoencoder,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -168,7 +186,6 @@ recovery_methods = {
     # },
 
 }
-
 
 # ------------------------------------------------------------
 # 2. Alle Recovery-Methoden ausführen
