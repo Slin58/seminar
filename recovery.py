@@ -5,6 +5,12 @@
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
+from scipy.special import ndtr, log_ndtr
+from scipy.stats import norm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+
 
 # Einfache Imputation Methoden:
 def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
@@ -454,9 +460,6 @@ def lost_sales_model(history): # was ist das? Laut ChatGPT ein Überbegriff für
 
 # test letztes von Claude AI
 def tobit_model(history):
-    from scipy.optimize import minimize
-    from scipy.special import ndtr, log_ndtr
-
     # ---------- FEATURES ----------
     hours_matrix = np.vstack(history["hours_sale"].values)
 
@@ -544,13 +547,6 @@ def tobit_model(history):
     print(f"sigma_hat: {sigma_hat:.4f}")
     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales:  {history['recovered_daily_sales_tobit'].mean():.4f}")
-
-import numpy as np
-import pandas as pd
-from scipy.optimize import minimize
-from scipy.special import ndtr, log_ndtr
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import os
 
 # ── per-series worker (must be top-level for pickling) ──────────────────────
 def _fit_one_series(args):
@@ -640,8 +636,279 @@ def _fit_one_series(args):
     return store_id, product_id, out, "ok"
 
 
-def bayesian_model(history):
-    return
+# def bayesian_model(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC - Nils # 7 min aber schlechter als raw_data
+#     # ---------- FEATURES (identisch zu Tobit) ----------
+#     hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
+#     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
+#                             index=history.index)
+
+#     base_df = pd.DataFrame({
+#         "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
+#         "temperature": history["avg_temperature"],
+#         "humidity":    history["avg_humidity"],
+#         "wind":        history["avg_wind_level"],
+#         "holiday":     history["holiday_flag"],
+#         "activity":    history["activity_flag"],
+#         "discount":    history["discount"],
+#         "const":       1.0,
+#     }, index=history.index).fillna(0)
+
+#     X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float32)
+#     y           = history["sale_amount"].values.astype(np.float32).ravel()
+#     is_censored = history["is_censored"].values.astype(bool).ravel()
+
+#     obs = ~is_censored
+#     cen =  is_censored
+#     X_obs, X_cen = X[obs], X[cen]
+#     y_obs        = y[obs]
+
+#     n_features = X.shape[1]
+
+#     # ---------- LOG POSTERIOR ----------
+#     # Prior: beta ~ N(0, 10²), log_sigma ~ N(0, 1)
+#     def log_posterior(params):
+#         beta      = params[:-1].astype(np.float32)
+#         log_sigma = params[-1]
+#         sigma     = float(np.exp(log_sigma))
+
+#         # --- log likelihood ---
+#         mu_obs  = (X_obs @ beta).ravel()
+#         r       = (y_obs - mu_obs) / sigma
+#         ll_obs  = -0.5 * (r ** 2).sum() - len(y_obs) * (np.log(sigma) + 0.5 * np.log(2 * np.pi))
+
+#         mu_cen  = (X_cen @ beta).ravel()
+#         alpha   = mu_cen / sigma
+#         ll_cen  = np.log(np.maximum(norm.cdf(alpha), 1e-12)).sum()
+
+#         ll = ll_obs + ll_cen
+
+#         # --- log prior ---
+#         lp_beta      = -0.5 * (beta ** 2 / 100).sum()   # N(0, 10²)
+#         lp_log_sigma = -0.5 * log_sigma ** 2             # N(0, 1)
+
+#         return float(ll + lp_beta + lp_log_sigma)
+
+#     # ---------- METROPOLIS-HASTINGS ----------
+#     n_samples    = 2000
+#     n_burnin     = 500
+#     step_size    = 0.01
+
+#     rng          = np.random.default_rng(42)
+#     params_curr  = np.zeros(n_features + 1, dtype=np.float64)
+#     lp_curr      = log_posterior(params_curr)
+
+#     samples      = np.empty((n_samples, n_features + 1), dtype=np.float32)
+#     n_accepted   = 0
+
+#     print(f"Running MCMC: {n_burnin} burnin + {n_samples} samples...")
+
+#     for i in range(n_burnin + n_samples):
+#         proposal = params_curr + rng.normal(0, step_size, size=params_curr.shape)
+#         lp_prop  = log_posterior(proposal)
+
+#         # accept/reject
+#         if np.log(rng.uniform()) < lp_prop - lp_curr:
+#             params_curr = proposal
+#             lp_curr     = lp_prop
+#             if i >= n_burnin:
+#                 n_accepted += 1
+
+#         if i >= n_burnin:
+#             samples[i - n_burnin] = params_curr
+
+#     acceptance_rate = n_accepted / n_samples
+
+#     # ---------- POSTERIOR MEAN ESTIMATE ----------
+#     beta_hat  = samples[:, :-1].mean(axis=0).astype(np.float32)
+#     sigma_hat = float(np.exp(samples[:, -1].mean()))
+
+#     # ---------- PREDICT ----------
+#     mu_hat  = (X @ beta_hat).ravel()
+#     alpha   = mu_hat / sigma_hat
+#     lambda_ = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
+
+#     e_y_star  = mu_hat + sigma_hat * lambda_
+#     recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
+
+#     history["recovered_daily_sales_bayesian"] = recovered
+
+#     print(f"Acceptance rate: {acceptance_rate:.3f} (ideal: 0.2–0.5)")
+#     print(f"sigma_hat: {sigma_hat:.4f}")
+#     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
+#     print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
+    
+def bayesian_model(history):  # Bayesisches Modell mit NUTS - Nils
+    # ---------- FEATURES (identisch zu Tobit) ----------
+    hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
+    hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
+                            index=history.index)
+
+    base_df = pd.DataFrame({
+        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
+        "temperature": history["avg_temperature"],
+        "humidity":    history["avg_humidity"],
+        "wind":        history["avg_wind_level"],
+        "holiday":     history["holiday_flag"],
+        "activity":    history["activity_flag"],
+        "discount":    history["discount"],
+        "const":       1.0,
+    }, index=history.index).fillna(0)
+
+    X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float64)
+    y           = history["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = history["is_censored"].values.astype(bool).ravel()
+
+    obs = ~is_censored
+    cen =  is_censored
+    X_obs, X_cen = X[obs], X[cen]
+    y_obs        = y[obs]
+    n_features   = X.shape[1]
+
+    # ---------- LOG POSTERIOR + GRADIENT ----------
+    def log_posterior_and_grad(params):
+        beta      = params[:-1]
+        sigma     = float(np.exp(params[-1]))
+
+        mu_obs    = (X_obs @ beta).ravel()
+        r         = (y_obs - mu_obs) / sigma
+        ll_obs    = -0.5 * (r ** 2).sum() - len(y_obs) * (np.log(sigma) + 0.5 * np.log(2 * np.pi))
+
+        mu_cen    = (X_cen @ beta).ravel()
+        alpha     = mu_cen / sigma
+        phi       = norm.pdf(alpha)
+        Phi       = np.maximum(norm.cdf(alpha), 1e-12)
+        ll_cen    = np.log(Phi).sum()
+
+        lp_beta      = -0.5 * (beta ** 2 / 100).sum()
+        lp_log_sigma = -0.5 * params[-1] ** 2
+
+        lp = ll_obs + ll_cen + lp_beta + lp_log_sigma
+
+        # --- gradient ---
+        grad_beta  =  X_obs.T @ (r / sigma)
+        grad_beta +=  X_cen.T @ (phi / Phi / sigma)
+        grad_beta -=  beta / 100                          # prior
+
+        grad_log_sigma  =  (r ** 2).sum() - len(y_obs)   # uncensored
+        grad_log_sigma -= (phi / Phi * alpha).sum()       # censored
+        grad_log_sigma -=  params[-1]                     # prior
+
+        return float(lp), np.append(grad_beta, grad_log_sigma)
+
+    # ---------- NUTS SAMPLER ----------
+    def nuts_step(params, log_grad_fn, step_size, max_depth=10):
+        _, grad     = log_grad_fn(params)
+        momentum    = np.random.randn(len(params))
+        h_curr      = log_grad_fn(params)[0] - 0.5 * (momentum ** 2).sum()
+
+        # leapfrog
+        def leapfrog(q, p, eps, n_steps):
+            q, p = q.copy(), p.copy()
+            p   += 0.5 * eps * log_grad_fn(q)[1]
+            for _ in range(n_steps - 1):
+                q += eps * p
+                p += eps * log_grad_fn(q)[1]
+            q   += eps * p
+            p   += 0.5 * eps * log_grad_fn(q)[1]
+            return q, p
+
+        # build tree
+        q_minus = q_plus = params.copy()
+        p_minus = p_plus = momentum.copy()
+        q_prop  = params.copy()
+        n, s    = 1, 1
+
+        for depth in range(max_depth):
+            direction = np.random.choice([-1, 1])
+            eps       = direction * step_size
+            n_steps   = 2 ** depth
+
+            if direction == -1:
+                q_minus, p_minus = leapfrog(q_minus, p_minus, eps, n_steps)
+                q_new, p_new     = q_minus, p_minus
+            else:
+                q_plus,  p_plus  = leapfrog(q_plus,  p_plus,  eps, n_steps)
+                q_new, p_new     = q_plus, p_plus
+
+            lp_new = log_grad_fn(q_new)[0]
+            h_new  = lp_new - 0.5 * (p_new ** 2).sum()
+
+            # accept subtree proposal
+            n_new  = int(np.exp(min(0.0, h_new - h_curr)))
+            if n_new >= 1 and np.random.uniform() < n_new / n:
+                q_prop = q_new.copy()
+            n += n_new
+
+            # U-turn check
+            dq = q_plus - q_minus
+            if (dq @ p_minus < 0) or (dq @ p_plus < 0):
+                break
+
+        return q_prop
+
+    # ---------- WARMUP: dual averaging step size ----------
+    def dual_averaging_warmup(params, log_grad_fn, n_warmup=200, target_accept=0.65):
+        step_size   = 0.1
+        mu          = np.log(10 * step_size)
+        log_eps_bar = 0.0
+        h_bar       = 0.0
+        gamma, t0, kappa = 0.05, 10, 0.75
+
+        for t in range(1, n_warmup + 1):
+            params   = nuts_step(params, log_grad_fn, step_size)
+            lp, grad = log_grad_fn(params)
+            h_bar    = (1 - 1/(t + t0)) * h_bar + (target_accept - min(1, np.exp(lp))) / (t + t0)
+            log_eps  = mu - np.sqrt(t) / gamma * h_bar
+            step_size        = np.exp(log_eps)
+            log_eps_bar      = t**(-kappa) * log_eps + (1 - t**(-kappa)) * log_eps_bar
+
+        return params, np.exp(log_eps_bar)
+
+    # ---------- RUN ----------
+    n_samples = 1000
+    n_warmup  = 300
+
+    rng      = np.random.default_rng(42)
+    np.random.seed(42)
+
+    params0  = np.zeros(n_features + 1)
+
+    # MAP initialisierung für besseren Startpunkt
+    map_result = minimize(
+        lambda p: -log_posterior_and_grad(p)[0],
+        params0,
+        jac=lambda p: -log_posterior_and_grad(p)[1],
+        method="L-BFGS-B",
+    )
+    params_curr = map_result.x
+    print("MAP initialization done, starting NUTS warmup...")
+
+    params_curr, step_size = dual_averaging_warmup(params_curr, log_posterior_and_grad, n_warmup)
+    print(f"Warmup done — adapted step_size: {step_size:.5f}, starting sampling...")
+
+    samples = np.empty((n_samples, n_features + 1))
+    for i in range(n_samples):
+        params_curr  = nuts_step(params_curr, log_posterior_and_grad, step_size)
+        samples[i]   = params_curr
+        if (i + 1) % 100 == 0:
+            print(f"  Sample {i+1}/{n_samples}")
+
+    # ---------- POSTERIOR MEAN ----------
+    beta_hat  = samples[:, :-1].mean(axis=0)
+    sigma_hat = float(np.exp(samples[:, -1].mean()))
+
+    # ---------- PREDICT ----------
+    mu_hat   = (X @ beta_hat).ravel()
+    alpha    = mu_hat / sigma_hat
+    lambda_  = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
+    e_y_star = mu_hat + sigma_hat * lambda_
+    recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
+
+    history["recovered_daily_sales_bayesian"] = recovered
+
+    print(f"sigma_hat: {sigma_hat:.4f}")
+    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
 
 def inventory_aware_model(history):
     return
