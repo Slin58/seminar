@@ -46,7 +46,8 @@ visible_sum = np.nansum(np.where(op_stock_status == 0, op_sales, 0), axis=1) # a
 #outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - visible_sum, 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21) TODO möglicher Fehler Doppelzählung
 outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - np.nansum(op_sales), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
 
-
+RANDOM_SEED = 42
+rng = np.random.default_rng(RANDOM_SEED)
 
 # ------------------------------------------------------------
 # 1. Recovery-Methoden registrieren
@@ -59,11 +60,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_random_sampling",
     # },
 
-    "global_mean": {
-        "func": recovery.global_mean,
-        "args": (history, op_stock_status, op_sales, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_global_mean",
-    },
+    # "global_mean": {
+    #     "func": recovery.global_mean,
+    #     "args": (history, op_stock_status, op_sales, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_global_mean",
+    # },
 
     # "per_series_mean": {
     #     "func": recovery.per_series_mean,
@@ -107,11 +108,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_rolling_mean",
     # },
 
-    "ema": {
-        "func": recovery.exponential_moving_average,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_exponential_moving_average",
-    },
+    # "ema": {
+    #     "func": recovery.exponential_moving_average,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_exponential_moving_average",
+    # },
 
     # "ema_series": {
     #     "func": recovery.exponential_moving_average_series,
@@ -119,11 +120,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
     # },
 
-    # "tobit_model": {
-    #     "func": recovery.tobit_model,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_tobit",
-    #},
+    "tobit_model": {
+        "func": recovery.tobit_model,
+        "args": (history,),
+        "target_col": "recovered_daily_sales_tobit",
+    },
 
     # "bayesian_model": {
     #     "func": recovery.bayesian_model,
@@ -187,16 +188,23 @@ recovery_methods = {
 
 }
 
+# knn hat zu lange gedauert
+
 # ------------------------------------------------------------
 # 2. Alle Recovery-Methoden ausführen
 # ------------------------------------------------------------
+from datetime import datetime
+
 
 for recovery_name, method in recovery_methods.items():
+    current_time = datetime.now()
+
+
     print(f"\n=== Running recovery method: {recovery_name} ===")
     method["func"](*method["args"])
     arr = history[f"{method['target_col']}"].to_numpy()
 
     np.save(f"recovered_column/{method['target_col']}.npy", arr)
     print("Gespeichert:", arr)
-
+    print("Verarbeitungszeit: ", datetime.now()-current_time)
 

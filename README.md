@@ -31,3 +31,26 @@ sales_lag1: Lag-1-Verkauf (Verkauf am vorherigen Tag)
 sales_lag7: Lag-7-Verkauf (Verkauf am gleichen Tag der Vorwoche)
 sales_roll7: 7-Tage gleitender Durchschnitt der Verkäufe
 sales_roll28: 28-Tage gleitender Durchschnitt der Verkäufe
+
+
+# Einordnung Recovery methods
+1. Statistical / Classical Methods
+Mean-based
+Moving averages
+Seasonal methods
+Interpolation
+State-space / decomposition
+2. Machine Learning Methods
+Distance-based
+Tree-based
+Probabilistic models
+Iterative imputation
+3. Deep Learning Methods
+Autoencoder
+Transformer-based
+Diffusion-based
+4. Hybrid / Advanced Recovery Approaches
+STL-based
+Kalman-like
+Inventory-aware
+Bayesian / Tobit approaches
