@@ -222,55 +222,29 @@ def exponential_moving_average(history, op_sales_masked, outside_slice, alpha=0.
     print(f"Alpha used: {alpha}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average'].mean():.4f}")
 
-def exponential_moving_average_series(history, op_sales_masked, outside_slice, alpha=0.3):  # EMA pro series_id - Laura
-
+def exponential_moving_average_series(history, op_sales_masked, outside_slice, alpha=0.3): # lädt ca 2,5 min 
     imputed = op_sales_masked.copy()
-
-    n_rows, n_hours = imputed.shape
-
     imputed_count = np.isnan(imputed).sum()
 
-    # Series IDs einmal holen
     series_ids = history["series_id"].values
+    n_hours = imputed.shape[1]
 
-    # Jede Stunde einzeln
     for h in range(n_hours):
+        s = pd.Series(imputed[:, h])
 
-        # Stundenwerte als DataFrame
-        temp = pd.DataFrame({
-            "series_id": series_ids,
-            "value": imputed[:, h]
-        })
-
-        # EMA pro Serie berechnen
-        temp["ema"] = (
-            temp.groupby("series_id")["value"]
-            .transform(
-                lambda x: x.ewm(
-                    alpha=alpha,
-                    adjust=False,
-                    ignore_na=True
-                ).mean()
-            )
+        ema = (
+            s.groupby(series_ids)
+            .transform(lambda x: x.ewm(alpha=alpha, adjust=False, ignore_na=True).mean())
         )
 
-        # Fehlende Werte finden
-        nan_mask = temp["value"].isna()
+        mask = s.isna()
+        fallback = s.mean()
 
-        # Fallback pro Stunde
-        fallback = np.nanmean(imputed[:, h])
+        imputed[mask.values, h] = ema[mask].fillna(fallback).values
 
-        # NaNs durch EMA ersetzen
-        replacement = temp["ema"].fillna(fallback)
-
-        imputed[nan_mask.values, h] = replacement[nan_mask].values
-
-    # Sicherheit
     imputed = np.maximum(imputed, 0)
 
-    # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
-
     recovered_daily = outside_slice + recovered_sum
 
     history["recovered_daily_sales_exponential_moving_average_series"] = recovered_daily
@@ -278,79 +252,7 @@ def exponential_moving_average_series(history, op_sales_masked, outside_slice, a
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(
-        f"Mean recovered sales: "
-        f"{history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}"
-    )
-
-# def exponential_moving_average_series(history, op_stock, op_sales, op_sales_masked, outside_slice, alpha=0.3):  # EMA pro series_id - Laura
-
-#     imputed = op_sales_masked.copy()
-
-#     imputed_count = 0
-
-#     # Jede Stunde einzeln
-#     for h in range(16):
-
-#         # Jede Serie einzeln
-#         for sid in history["series_id"].unique():
-
-#             # Zeilen dieser Serie
-#             series_mask = history["series_id"] == sid
-
-#             # Werte dieser Stunde UND dieser Serie
-#             col = imputed[series_mask, h]
-
-#             # Fehlende Werte finden
-#             mask = np.isnan(col)
-
-#             # Positionen fehlender Werte
-#             missing_idx = np.where(mask)[0]
-
-#             for idx in missing_idx:
-
-#                 # Frühere sichtbare Werte derselben Serie
-#                 previous_values = col[:idx]
-
-#                 previous_values = previous_values[
-#                     ~np.isnan(previous_values)
-#                 ]
-
-#                 # Falls sichtbare Werte existieren
-#                 if len(previous_values) > 0:
-
-#                     # EMA berechnen
-#                     ema = previous_values[0]
-
-#                     for val in previous_values[1:]:
-#                         ema = alpha * val + (1 - alpha) * ema
-
-#                     mean_value = ema
-
-#                 else:
-#                     # Fallback: Durchschnitt dieser Serie/Stunde
-#                     mean_value = np.nanmean(col)
-
-#                 # Fehlenden Wert ersetzen
-#                 col[idx] = mean_value
-
-#                 imputed_count += 1
-
-#             # Zurückschreiben
-#             imputed[series_mask, h] = col
-
-#     # Rebuild corrected daily target
-#     recovered_sum = np.nansum(imputed, axis=1)
-
-#     recovered_daily = outside_slice + recovered_sum
-
-#     history["recovered_daily_sales_exponential_moving_average_series"] = recovered_daily
-
-#     print(f"Imputed {imputed_count:,} hourly cells")
-#     print(f"Alpha used: {alpha}")
-#     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-#     print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}")
-
+    print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}")
 
 # Seasonal imputation: - Nils # TODO ist das nicht das gleiche, wie weekday_mean?
 def seasonal_mean(history):  # Durchschnitt desselben Wochentags - Nils
@@ -425,26 +327,361 @@ def hour_per_seasonal_mean(history, op_sales_masked, outside_slice):  # Durchsch
 
 # Zeitreihenbasierte Recovery-Methoden: - Laura
 
-def interpolation_linear(): # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
-    return
 
-def interpolation_spline(history): # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
-    return
+def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare Interpolation- Laura
+    # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
 
-def interpolation_polynomial(history): # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
-    return
+    imputed = op_sales_masked.copy()
 
-def kalman_smoothing(history): # state space 
-    return
+    imputed_count = np.isnan(imputed).sum()
 
-def stl_based(history): # zerlegt trend, saison und rest
-    return
+    n_hours = imputed.shape[1]
 
+    # Jede Stunde einzeln
+    for h in range(n_hours):
+
+        s = pd.Series(imputed[:, h])
+
+        # Linear interpolieren
+        interpolated = s.interpolate(
+            method="linear",
+            limit_direction="both"
+        )
+
+        # Fallback falls komplett NaN
+        fallback = s.mean()
+
+        interpolated = interpolated.fillna(fallback)
+
+        imputed[:, h] = interpolated.values
+
+    # Sicherheit
+    imputed = np.maximum(imputed, 0)
+
+    # Rebuild corrected daily target
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_interpolation_linear"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(
+        f"Mean recovered sales: "
+        f"{history['recovered_daily_sales_interpolation_linear'].mean():.4f}"
+    )
+
+
+def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation - Laura
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = np.isnan(imputed).sum()
+    n_hours = imputed.shape[1]
+
+    for h in range(n_hours):
+
+        s = pd.Series(imputed[:, h])
+
+        # Spline braucht genug bekannte Werte
+        if s.notna().sum() > order:
+            interpolated = s.interpolate(
+                method="spline",
+                order=order,
+                limit_direction="both"
+            )
+        else:
+            interpolated = s.copy()
+
+        # Fallback für übrige NaNs
+        fallback = s.mean()
+        interpolated = interpolated.fillna(fallback)
+
+        imputed[:, h] = interpolated.values
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_interpolation_spline"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Spline order used: {order}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
+
+def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = np.isnan(imputed).sum()
+
+    n_hours = imputed.shape[1]
+
+    # Jede Stunde einzeln
+    for h in range(n_hours):
+
+        s = pd.Series(imputed[:, h])
+
+        # Polynomial braucht genug bekannte Werte
+        if s.notna().sum() > order:
+
+            interpolated = s.interpolate(
+                method="polynomial",
+                order=order,
+                limit_direction="both"
+            )
+
+        else:
+            interpolated = s.copy()
+
+        # Fallback falls noch NaNs existieren
+        fallback = s.mean()
+
+        interpolated = interpolated.fillna(fallback)
+
+        imputed[:, h] = interpolated.values
+
+    # Sicherheit
+    imputed = np.maximum(imputed, 0)
+
+    # Rebuild corrected daily target
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_interpolation_polynomial"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Polynomial order used: {order}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(
+        f"Mean recovered sales: "
+        f"{history['recovered_daily_sales_interpolation_polynomial'].mean():.4f}"
+    )
+
+def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura TODO lädt über 9 min (nicht fertig laden lassen) - Laura
+
+    from statsmodels.tsa.statespace.structural import UnobservedComponents
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = np.isnan(imputed).sum()
+    n_hours = imputed.shape[1]
+
+    for h in range(n_hours):
+
+        s = pd.Series(imputed[:, h]).astype(float)
+
+        # Falls zu wenig echte Werte vorhanden sind: Fallback auf Stundenmittel
+        if s.notna().sum() < 10:
+            filled = s.fillna(s.mean())
+        else:
+            try:
+                # Local level model = einfaches State-Space-Modell
+                model = UnobservedComponents(
+                    s,
+                    level="local level"
+                )
+
+                result = model.fit(disp=False)
+
+                # Smoothed states als geschätzte Werte
+                smoothed = result.smoothed_state[0]
+
+                filled = s.copy()
+                filled[s.isna()] = smoothed[s.isna()]
+
+                # Falls noch NaNs übrig bleiben
+                filled = filled.fillna(s.mean())
+
+            except Exception:
+                # Falls das Modell nicht konvergiert
+                filled = s.fillna(s.mean())
+
+        imputed[:, h] = filled.values
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_kalman_smoothing"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_kalman_smoothing'].mean():.4f}")
+
+def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): # - Laura 
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    n_hours = imputed.shape[1]
+
+    for h in range(n_hours):
+        s = pd.Series(imputed[:, h])
+
+        # smoothing ähnlich wie einfacher State-Filter
+        smooth = s.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+
+        mask = s.isna()
+        fallback = s.mean()
+
+        imputed[mask.values, h] = smooth[mask].fillna(fallback).values
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_kalman_like"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Alpha used: {alpha}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_kalman_like'].mean():.4f}")
+
+def stl_real(history, op_sales_masked, outside_slice, period=7): # TODO lädt über 5 min (nicht fertig laden lassen) - Laura
+    from statsmodels.tsa.seasonal import STL
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    n_hours = imputed.shape[1]
+
+    for h in range(n_hours):
+        s = pd.Series(imputed[:, h]).astype(float)
+
+        # STL kann keine NaNs direkt verarbeiten
+        s_filled = s.interpolate(
+            method="linear",
+            limit_direction="both"
+        )
+
+        fallback = s.mean()
+        s_filled = s_filled.fillna(fallback)
+
+        try:
+            stl = STL(
+                s_filled,
+                period=period,
+                robust=True
+            )
+
+            result = stl.fit()
+
+            estimate = result.trend + result.seasonal
+
+            mask = s.isna()
+            imputed[mask.values, h] = estimate[mask].values
+
+        except Exception:
+            mask = s.isna()
+            imputed[mask.values, h] = fallback
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_stl_real"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"STL period used: {period}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_stl_real'].mean():.4f}")
+
+def stl_based(history, op_sales_masked, outside_slice, period=7):
+    """
+    STL-nahe Imputation:
+    - nutzt Rolling Median als Trend
+    - nutzt Wochentagsmuster als Saison
+    - füllt NaNs mit Trend + Saison
+    """
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    weekdays = history["dt"].dt.weekday.values
+    n_hours = imputed.shape[1]
+
+    for h in range(n_hours):
+
+        s = pd.Series(imputed[:, h])
+
+        # Trend: geglätteter Verlauf
+        trend = s.rolling(window=period, min_periods=1, center=True).median()
+
+        # detrended Werte
+        detrended = s - trend
+
+        # Saison: durchschnittlicher Rest pro Wochentag
+        seasonal = np.zeros(len(s))
+
+        for wd in range(7):
+            wd_mask = weekdays == wd
+            seasonal_value = np.nanmean(detrended[wd_mask])
+
+            if np.isnan(seasonal_value):
+                seasonal_value = 0
+
+            seasonal[wd_mask] = seasonal_value
+
+        # Schätzung = Trend + Saison
+        estimate = trend + seasonal
+
+        # Fallback
+        fallback = s.mean()
+        estimate = estimate.fillna(fallback)
+
+        mask = s.isna()
+        imputed[mask.values, h] = estimate[mask].values
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_stl_based"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Period used: {period}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_stl_based'].mean():.4f}")
 
 # ML-basierte Recovery-Methoden: - Laura
 
-def knn(history): # K-nearest neighbors basierte Imputation
-    return
+def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # KNN-Imputation - Laura
+
+    from sklearn.impute import KNNImputer
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = np.isnan(imputed).sum()
+
+    # KNNImputer arbeitet spaltenweise über die 16 Stunden
+    imputer = KNNImputer(
+        n_neighbors=n_neighbors,
+        weights="distance"
+    )
+
+    imputed = imputer.fit_transform(imputed)
+
+    # Sicherheit: keine negativen Werte
+    imputed = np.maximum(imputed, 0)
+
+    # Rebuild corrected daily target
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_knn"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"KNN neighbors used: {n_neighbors}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_knn'].mean():.4f}")
 
 def random_forest(history): # Random Forest / XGBoost basierte Imputation
     return
