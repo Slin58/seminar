@@ -765,8 +765,344 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
     print(f"Mean recovered sales: {history['recovered_daily_sales_random_forest'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
-def iterative(history): # Iterative Imputation (z.B. MICE)
-    return
+def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
+
+    import time
+    import lightgbm as lgb
+
+    print("\n=== LightGBM Recovery ===")
+
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    n_rows, n_hours = imputed.shape
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+
+    # ------------------------------------------------------------
+    # 1. Trainingsdaten: nur sichtbare Stundenwerte
+    # ------------------------------------------------------------
+
+    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+
+    X_obs = pd.DataFrame({
+        "hour": hours_obs,
+        "series_id": history["series_id"].values[rows_obs],
+        "day_idx": history["day_idx"].values[rows_obs],
+        "weekday": history["dt"].dt.weekday.values[rows_obs],
+        "discount": history["discount"].values[rows_obs],
+        "holiday_flag": history["holiday_flag"].values[rows_obs],
+        "activity_flag": history["activity_flag"].values[rows_obs],
+        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": history["precpt"].fillna(0).values[rows_obs],
+    })
+
+    y_obs = imputed[rows_obs, hours_obs]
+
+    print(f"Visible training rows: {len(X_obs):,}")
+
+    # ------------------------------------------------------------
+    # 2. Sample ziehen, damit Training praktikabel bleibt
+    # ------------------------------------------------------------
+
+    if len(X_obs) > max_train_rows:
+        sample_idx = np.random.default_rng(random_state).choice(
+            len(X_obs),
+            size=max_train_rows,
+            replace=False
+        )
+
+        X_train = X_obs.iloc[sample_idx]
+        y_train = y_obs[sample_idx]
+
+    else:
+        X_train = X_obs
+        y_train = y_obs
+
+    print(f"Training rows used: {len(X_train):,}")
+
+    # ------------------------------------------------------------
+    # 3. Modell trainieren
+    # ------------------------------------------------------------
+
+    model = lgb.LGBMRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=-1,
+        num_leaves=64,
+        min_child_samples=50,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="regression",
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    print("Training LightGBM...")
+    start_fit = time.time()
+
+    model.fit(X_train, y_train)
+
+    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 4. Fehlende Werte vorhersagen
+    # ------------------------------------------------------------
+
+    rows_miss, hours_miss = np.where(np.isnan(imputed))
+
+    print(f"Predicting missing rows: {len(rows_miss):,}")
+
+    start_pred = time.time()
+
+    for start in range(0, len(rows_miss), batch_size):
+        end = min(start + batch_size, len(rows_miss))
+
+        print(f"Predicting batch {start:,} to {end:,}")
+
+        batch_rows = rows_miss[start:end]
+        batch_hours = hours_miss[start:end]
+
+        X_missing = pd.DataFrame({
+            "hour": batch_hours,
+            "series_id": history["series_id"].values[batch_rows],
+            "day_idx": history["day_idx"].values[batch_rows],
+            "weekday": history["dt"].dt.weekday.values[batch_rows],
+            "discount": history["discount"].values[batch_rows],
+            "holiday_flag": history["holiday_flag"].values[batch_rows],
+            "activity_flag": history["activity_flag"].values[batch_rows],
+            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": history["precpt"].fillna(0).values[batch_rows],
+        })
+
+        preds = model.predict(X_missing)
+
+        imputed[batch_rows, batch_hours] = preds
+
+    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 5. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_lightgbm"] = recovered_daily
+
+    print("\n=== LightGBM Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_lightgbm'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
+
+    import time
+    from xgboost import XGBRegressor
+
+    print("\n=== XGBoost Recovery ===")
+
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    n_rows, n_hours = imputed.shape
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+
+    # ------------------------------------------------------------
+    # 1. Trainingsdaten: nur sichtbare Stundenwerte
+    # ------------------------------------------------------------
+
+    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+
+    X_obs = pd.DataFrame({
+        "hour": hours_obs,
+        "series_id": history["series_id"].values[rows_obs],
+        "day_idx": history["day_idx"].values[rows_obs],
+        "weekday": history["dt"].dt.weekday.values[rows_obs],
+        "discount": history["discount"].values[rows_obs],
+        "holiday_flag": history["holiday_flag"].values[rows_obs],
+        "activity_flag": history["activity_flag"].values[rows_obs],
+        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": history["precpt"].fillna(0).values[rows_obs],
+    })
+
+    y_obs = imputed[rows_obs, hours_obs]
+
+    print(f"Visible training rows: {len(X_obs):,}")
+
+    # ------------------------------------------------------------
+    # 2. Sample ziehen, damit Training praktikabel bleibt
+    # ------------------------------------------------------------
+
+    if len(X_obs) > max_train_rows:
+        sample_idx = np.random.default_rng(random_state).choice(
+            len(X_obs),
+            size=max_train_rows,
+            replace=False
+        )
+
+        X_train = X_obs.iloc[sample_idx]
+        y_train = y_obs[sample_idx]
+
+    else:
+        X_train = X_obs
+        y_train = y_obs
+
+    print(f"Training rows used: {len(X_train):,}")
+
+    # ------------------------------------------------------------
+    # 3. Modell trainieren
+    # ------------------------------------------------------------
+
+    model = XGBRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=8,
+        min_child_weight=10,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="reg:squarederror",
+        n_jobs=-1,
+        random_state=random_state,
+        tree_method="hist"
+    )
+
+    print("Training XGBoost...")
+    start_fit = time.time()
+
+    model.fit(X_train, y_train)
+
+    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 4. Fehlende Werte vorhersagen
+    # ------------------------------------------------------------
+
+    rows_miss, hours_miss = np.where(np.isnan(imputed))
+
+    print(f"Predicting missing rows: {len(rows_miss):,}")
+
+    start_pred = time.time()
+
+    for start in range(0, len(rows_miss), batch_size):
+        end = min(start + batch_size, len(rows_miss))
+
+        print(f"Predicting batch {start:,} to {end:,}")
+
+        batch_rows = rows_miss[start:end]
+        batch_hours = hours_miss[start:end]
+
+        X_missing = pd.DataFrame({
+            "hour": batch_hours,
+            "series_id": history["series_id"].values[batch_rows],
+            "day_idx": history["day_idx"].values[batch_rows],
+            "weekday": history["dt"].dt.weekday.values[batch_rows],
+            "discount": history["discount"].values[batch_rows],
+            "holiday_flag": history["holiday_flag"].values[batch_rows],
+            "activity_flag": history["activity_flag"].values[batch_rows],
+            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": history["precpt"].fillna(0).values[batch_rows],
+        })
+
+        preds = model.predict(X_missing)
+
+        imputed[batch_rows, batch_hours] = preds
+
+    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 5. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_xgboost"] = recovered_daily
+
+    print("\n=== XGBoost Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_xgboost'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # Iterative Imputation / MICE - Laura
+
+    import time
+    from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+    from sklearn.impute import IterativeImputer
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    print("\n=== Iterative Imputation Recovery ===")
+
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+    print(f"Max iterations: {max_iter}")
+
+    estimator = ExtraTreesRegressor(
+        n_estimators=30,
+        max_depth=10,
+        min_samples_leaf=20,
+        n_jobs=-1,
+        random_state=random_state
+    )
+
+    imputer = IterativeImputer(
+        estimator=estimator,
+        max_iter=max_iter,
+        initial_strategy="mean",
+        imputation_order="ascending",
+        random_state=random_state,
+        skip_complete=True,
+        verbose=1
+    )
+
+    print("Starting iterative imputation...")
+    start_impute = time.time()
+
+    imputed = imputer.fit_transform(imputed)
+
+    print(f"Iterative imputation finished in {time.time() - start_impute:.2f} seconds")
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_iterative"] = recovered_daily
+
+    print("\n=== Iterative Imputation Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_iterative'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
 
 # Spezifische Demandrevovery Modelle: - Nils
@@ -1306,9 +1642,245 @@ def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8
     print(f"Mean raw sale_amount:            {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales (autoenc):  {history['recovered_daily_sales_autoencoder'].mean():.4f}")
 
-def transformer(history): # SAITS, BRITS, GRIN, CSDI
+#def transformer(history): # SAITS, BRITS, GRIN, CSDI
     return
 
-def defusion_model(history):
-    return
+def transformer(
+    history,
+    op_sales_masked,
+    outside_slice,
+    epochs=20,
+    batch_size=1024,
+    random_state=42
+):  # Transformer-basierte Imputation - Laura
 
+    import time
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    print("\n=== Transformer Recovery ===")
+    start_total = time.time()
+
+    torch.manual_seed(random_state)
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    # ------------------------------------------------------------
+    # 1. Trainingsdaten: nur vollständig sichtbare Profile
+    # ------------------------------------------------------------
+
+    clean_mask = ~np.isnan(imputed).any(axis=1)
+    clean_profiles = imputed[clean_mask]
+
+    if len(clean_profiles) < 100:
+        print("Not enough clean profiles for transformer training.")
+        history["recovered_daily_sales_transformer"] = np.nan
+        return
+
+    print(f"Clean training profiles: {len(clean_profiles):,}")
+    print(f"Missing values to impute: {imputed_count:,}")
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    scaler = StandardScaler()
+    clean_scaled = scaler.fit_transform(clean_profiles)
+
+    X_train = torch.tensor(clean_scaled, dtype=torch.float32)
+
+    dataset = TensorDataset(X_train, X_train)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # ------------------------------------------------------------
+    # 3. Einfaches Transformer Autoencoder Modell
+    # ------------------------------------------------------------
+
+    class TransformerAutoencoder(nn.Module):
+        def __init__(self, seq_len=16, d_model=32, nhead=4, num_layers=2):
+            super().__init__()
+
+            self.input_proj = nn.Linear(1, d_model)
+
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=64,
+                batch_first=True
+            )
+
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=num_layers
+            )
+
+            self.output_proj = nn.Linear(d_model, 1)
+
+        def forward(self, x):
+            # x shape: (batch, 16)
+            x = x.unsqueeze(-1)          # (batch, 16, 1)
+            x = self.input_proj(x)       # (batch, 16, d_model)
+            x = self.encoder(x)          # (batch, 16, d_model)
+            x = self.output_proj(x)      # (batch, 16, 1)
+            return x.squeeze(-1)         # (batch, 16)
+
+    model = TransformerAutoencoder(seq_len=imputed.shape[1])
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("Training Transformer Autoencoder...")
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+
+        for xb, yb in loader:
+            optimizer.zero_grad()
+
+            pred = model(xb)
+
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / len(loader):.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Fehlende Stunden rekonstruieren
+    # ------------------------------------------------------------
+
+    print("Imputing missing values...")
+
+    hour_mean = scaler.mean_
+
+    for start in range(0, len(imputed), batch_size):
+        end = min(start + batch_size, len(imputed))
+
+        batch = imputed[start:end]
+
+        missing_mask = np.isnan(batch)
+
+        if not missing_mask.any():
+            continue
+
+        # NaNs vor Modellinput mit Stundenmittel füllen
+        batch_filled = np.where(missing_mask, hour_mean, batch)
+
+        batch_scaled = scaler.transform(batch_filled)
+
+        xb = torch.tensor(batch_scaled, dtype=torch.float32)
+
+        with torch.no_grad():
+            reconstructed_scaled = model(xb).numpy()
+
+        reconstructed = scaler.inverse_transform(reconstructed_scaled)
+
+        batch[missing_mask] = reconstructed[missing_mask]
+
+        imputed[start:end] = batch
+
+    # ------------------------------------------------------------
+    # 6. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_transformer"] = recovered_daily
+
+    print("\n=== Transformer Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Epochs used: {epochs}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_transformer'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
+
+    import time
+
+    print("\n=== Diffusion-like Recovery ===")
+
+    start_total = time.time()
+
+    rng = np.random.default_rng(random_state)
+
+    imputed = op_sales_masked.copy()
+
+    imputed_count = np.isnan(imputed).sum()
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+    print(f"Number of samples: {n_samples}")
+    print(f"Noise scale: {noise_scale}")
+
+    # ------------------------------------------------------------
+    # 1. Stundenmittel und Stundenstandardabweichung berechnen
+    # ------------------------------------------------------------
+
+    hour_mean = np.nanmean(imputed, axis=0)
+    hour_std = np.nanstd(imputed, axis=0)
+
+    # Falls std 0 oder NaN ist
+    hour_std = np.where(
+        np.isnan(hour_std) | (hour_std == 0),
+        1e-6,
+        hour_std
+    )
+
+    nan_mask = np.isnan(imputed)
+
+    # ------------------------------------------------------------
+    # 2. Mehrere plausible Werte sampeln
+    # ------------------------------------------------------------
+
+    sampled_values = []
+
+    for i in range(n_samples):
+
+        noise = rng.normal(
+            loc=0,
+            scale=noise_scale,
+            size=imputed.shape
+        )
+
+        sample = hour_mean + noise * hour_std
+
+        sample = np.maximum(sample, 0)
+
+        sampled_values.append(sample)
+
+    # Durchschnitt der Samples
+    generated = np.mean(sampled_values, axis=0)
+
+    # Nur fehlende Werte ersetzen
+    imputed[nan_mask] = generated[nan_mask]
+
+    # ------------------------------------------------------------
+    # 3. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_diffusion"] = recovered_daily
+
+    print("\n=== Diffusion-like Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_diffusion'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
