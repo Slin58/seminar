@@ -108,22 +108,10 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_exponential_moving_average",
     # },
 
-    "ema_series": {
-        "func": recovery.exponential_moving_average_series,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_exponential_moving_average_series",
-    },
-
-    # "tobit_model": {
-    #     "func": recovery.tobit_model,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_tobit",
-    # },
-
-    # "bayesian_model": {
-    #     "func": recovery.bayesian_model,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_bayesian",  
+    # "ema_series": {
+    #     "func": recovery.exponential_moving_average_series,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
     # },
 
     # "interpolation_linear": {
@@ -143,6 +131,8 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_interpolation_polynomial",
     # },
+
+
 
     # "kalman_smoothing": {
     #     "func": recovery.kalman_smoothing,
@@ -174,6 +164,19 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_knn",
     # },
 
+
+    # "tobit_model": {
+    #     "func": recovery.tobit_model,
+    #     "args": (history,),
+    #     "target_col": "recovered_daily_sales_tobit",
+    # },
+
+    # "bayesian_model": {
+    #     "func": recovery.bayesian_model,
+    #     "args": (history,),
+    #     "target_col": "recovered_daily_sales_bayesian",  
+    # },
+
     # "autoencoder": {
     #     "func": recovery.autoencoder,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -182,7 +185,7 @@ recovery_methods = {
 
 }
 
-# knn, tobit, bayesian hat zu lange gedauert
+# knn über 3h, tobit, bayesian hat zu lange gedauert
 # kalman-smoothing: 1:38 h -> mean recovered sales: 1.1415
 # stl real: 1:18 h -> mean recoevered sales: 1.0977
 # autoencoder: 0:18 h -> 1.0779
