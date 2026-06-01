@@ -629,8 +629,141 @@ def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # KNN-Imputati
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_knn'].mean():.4f}")
 
-def random_forest(history): # Random Forest / XGBoost basierte Imputation
-    return
+def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
+
+    from sklearn.ensemble import RandomForestRegressor
+    import time
+
+    print("\n=== Random Forest Recovery ===")
+
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    n_rows, n_hours = imputed.shape
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+
+    # ------------------------------------------------------------
+    # 1. Trainingsdaten: nur sichtbare Stundenwerte
+    # ------------------------------------------------------------
+
+    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+
+    X_obs = pd.DataFrame({
+        "hour": hours_obs,
+        "series_id": history["series_id"].values[rows_obs],
+        "day_idx": history["day_idx"].values[rows_obs],
+        "weekday": history["dt"].dt.weekday.values[rows_obs],
+        "discount": history["discount"].values[rows_obs],
+        "holiday_flag": history["holiday_flag"].values[rows_obs],
+        "activity_flag": history["activity_flag"].values[rows_obs],
+        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": history["precpt"].fillna(0).values[rows_obs],
+    })
+
+    y_obs = imputed[rows_obs, hours_obs]
+
+    print(f"Visible training rows: {len(X_obs):,}")
+
+    # ------------------------------------------------------------
+    # 2. Training sample ziehen, damit es schneller läuft
+    # ------------------------------------------------------------
+
+    if len(X_obs) > max_train_rows:
+        sample_idx = np.random.default_rng(random_state).choice(
+            len(X_obs),
+            size=max_train_rows,
+            replace=False
+        )
+
+        X_train = X_obs.iloc[sample_idx]
+        y_train = y_obs[sample_idx]
+
+    else:
+        X_train = X_obs
+        y_train = y_obs
+
+    print(f"Training rows used: {len(X_train):,}")
+
+    # ------------------------------------------------------------
+    # 3. Modell trainieren
+    # ------------------------------------------------------------
+
+    model = RandomForestRegressor(
+        n_estimators=50,
+        max_depth=12,
+        min_samples_leaf=20,
+        n_jobs=-1,
+        random_state=random_state
+    )
+
+    print("Training Random Forest...")
+    start_fit = time.time()
+
+    model.fit(X_train, y_train)
+
+    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 4. Fehlende Werte vorhersagen
+    # ------------------------------------------------------------
+
+    rows_miss, hours_miss = np.where(np.isnan(imputed))
+
+    print(f"Predicting missing rows: {len(rows_miss):,}")
+
+    start_pred = time.time()
+
+    for start in range(0, len(rows_miss), batch_size):
+        end = min(start + batch_size, len(rows_miss))
+
+        print(f"Predicting batch {start:,} to {end:,}")
+
+        batch_rows = rows_miss[start:end]
+        batch_hours = hours_miss[start:end]
+
+        X_missing = pd.DataFrame({
+            "hour": batch_hours,
+            "series_id": history["series_id"].values[batch_rows],
+            "day_idx": history["day_idx"].values[batch_rows],
+            "weekday": history["dt"].dt.weekday.values[batch_rows],
+            "discount": history["discount"].values[batch_rows],
+            "holiday_flag": history["holiday_flag"].values[batch_rows],
+            "activity_flag": history["activity_flag"].values[batch_rows],
+            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": history["precpt"].fillna(0).values[batch_rows],
+        })
+
+        preds = model.predict(X_missing)
+
+        imputed[batch_rows, batch_hours] = preds
+
+    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # 5. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_random_forest"] = recovered_daily
+
+    print("\n=== Random Forest Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_random_forest'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
 def iterative(history): # Iterative Imputation (z.B. MICE)
     return
