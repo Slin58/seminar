@@ -1,0 +1,16 @@
+{
+    "recovered_daily_sales_global_mean": 1.280689,
+    "recovered_daily_sales_random_sampling": 2.783122,
+    "recovered_daily_sales_per_series_mean": 0.331856,
+    "recovered_daily_sales_hourly_mean": 1.820451,
+    "recovered_daily_sales_hour_per_series_mean": 12.052266,
+    "recovered_daily_sales_weekday_mean": 7.714222,
+    "recovered_daily_sales_weekday_daily_mean": 4.738142,
+    "recovered_daily_sales_rolling_mean": 7.625054,
+    "recovered_daily_sales_exponential_moving_average": 5.405854,
+    "recovered_daily_sales_interpolation_linear": 10.998394,
+    "recovered_daily_sales_interpolation_spline": 20.109756,
+    "recovered_daily_sales_interpolation_polynomial": 20.164819,
+    "recovered_daily_sales_kalman_like": 4.958839,
+    "recovered_daily_sales_stl_based": 37.398952
+}

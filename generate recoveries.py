@@ -108,11 +108,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_exponential_moving_average",
     # },
 
-    # "ema_series": {
-    #     "func": recovery.exponential_moving_average_series,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
-    # },
+    "ema_series": {
+        "func": recovery.exponential_moving_average_series,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_exponential_moving_average_series",
+    },
 
     # "tobit_model": {
     #     "func": recovery.tobit_model,
@@ -174,11 +174,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_knn",
     # },
 
-    "autoencoder": {
-        "func": recovery.autoencoder,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_autoencoder",
-    },
+    # "autoencoder": {
+    #     "func": recovery.autoencoder,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_autoencoder",
+    # },
 
 }
 
@@ -191,7 +191,7 @@ recovery_methods = {
 # 2. Alle Recovery-Methoden ausführen
 # ------------------------------------------------------------
 from datetime import datetime
-
+import json
 
 for recovery_name, method in recovery_methods.items():
     current_time = datetime.now()
@@ -203,5 +203,17 @@ for recovery_name, method in recovery_methods.items():
 
     np.save(f"recovered_column/{method['target_col']}.npy", arr)
     print("Gespeichert:", arr)
-    print("Verarbeitungszeit: ", datetime.now()-current_time)
+
+    processing_time = datetime.now()-current_time
+
+    print("Verarbeitungszeit: ", processing_time)
+
+    with open("recovered_column/processing_time.json", "r") as f:
+        content = f.read()
+        time = json.loads(content) if content.strip() else {}
+
+    time[method['target_col']] = processing_time.total_seconds()
+
+    with open("recovered_column/processing_time.json", "w") as f:
+        json.dump(time, f)
 
