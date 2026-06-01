@@ -72,18 +72,6 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_per_series_mean",
     # },
 
-    # "seasonal_mean": {
-    #     "func": recovery.seasonal_mean,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_seasonal_mean",
-    # },
-
-    # "hour_per_seasonal_mean": {
-    #     "func": recovery.hour_per_seasonal_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_hour_per_seasonal_mean",
-    # },
-
     # "hourly_mean": {
     #     "func": recovery.hourly_mean,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -100,6 +88,12 @@ recovery_methods = {
     #     "func": recovery.weekday_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_weekday_mean",
+    # },
+
+    # "weekday_daily_mean": {
+    #     "func": recovery.weekday_daily_mean,
+    #     "args": (history,),
+    #     "target_col": "recovered_daily_sales_weekday_daily_mean",
     # },
 
     # "rolling_mean": {
