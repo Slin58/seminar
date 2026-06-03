@@ -165,6 +165,45 @@ recovery_methods = {
     # },
 
 
+
+    # "random_forest": {
+    #     "func": recovery.random_forest,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_random_forest",
+    # },
+
+    # "lightgbm": {
+    #     "func": recovery.lightgbm,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_lightgbm",
+    # },
+
+    # "xgboost": {
+    #     "func": recovery.xgboost,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_xgboost",
+    # },
+
+    # "iterative": {
+    #     "func": recovery.iterative,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_iterative",
+    # },
+
+    # "transformer": {
+    #     "func": recovery.transformer,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_transformer",
+    # },
+
+    # "diffusion_model": {
+    #     "func": recovery.diffusion_model,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_diffusion",
+    # },
+
+
+
     # "tobit_model": {
     #     "func": recovery.tobit_model,
     #     "args": (history,),
@@ -185,7 +224,10 @@ recovery_methods = {
 
 }
 
-# knn über 3h, tobit, bayesian hat zu lange gedauert
+# knn über 3h, bayesian hat zu lange gedauert
+# transformer: 2:13 h -> 1.1008
+# tobit model: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT
+
 # kalman-smoothing: 1:38 h -> mean recovered sales: 1.1415
 # stl real: 1:18 h -> mean recoevered sales: 1.0977
 # autoencoder: 0:18 h -> 1.0779
@@ -199,8 +241,7 @@ import json
 for recovery_name, method in recovery_methods.items():
     current_time = datetime.now()
 
-
-    print(f"\n=== Running recovery method: {recovery_name} ===")
+    print(f"\n=== Running recovery method: {recovery_name} at {current_time} ===")
     method["func"](*method["args"])
     arr = history[f"{method['target_col']}"].to_numpy()
 
