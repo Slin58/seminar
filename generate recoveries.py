@@ -62,7 +62,7 @@ recovery_methods = {
 
     # "global_mean": {
     #     "func": recovery.global_mean,
-    #     "args": (history, op_stock_status, op_sales, op_sales_masked, outside_slice),
+    #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_global_mean",
     # },
 
@@ -166,11 +166,11 @@ recovery_methods = {
 
 
 
-    # "random_forest": {
-    #     "func": recovery.random_forest,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_random_forest",
-    # },
+    "random_forest": {
+        "func": recovery.random_forest,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_random_forest",
+    },
 
     # "lightgbm": {
     #     "func": recovery.lightgbm,

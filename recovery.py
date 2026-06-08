@@ -5,13 +5,29 @@
 
 import numpy as np
 import pandas as pd
+import os
+import time
+
 from scipy.optimize import minimize
 from scipy.special import ndtr, log_ndtr
 from scipy.stats import norm
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import os
+
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import KNNImputer, IterativeImputer
+from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from statsmodels.tsa.statespace.structural import UnobservedComponents
+from statsmodels.tsa.seasonal import STL
+
+import lightgbm as lgb
+from xgboost import XGBRegressor
+
 
 # Einfache Imputation Methoden:
 def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
@@ -37,7 +53,7 @@ def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple reco
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_random_sampling'].mean():.4f}")
 
-def global_mean(history, op_stock, op_sales, op_sales_masked, outside_slice):  # globaler Durchschnitt - TODO übergebene Variabeln anpassen
+def global_mean(history, op_sales_masked, outside_slice):  # globaler Durchschnitt
     imputed = op_sales_masked.copy()
     # Durchschnitt über alle sichtbaren Stundenwerte
     mean_value = np.nanmean(imputed)
@@ -319,7 +335,7 @@ def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare In
     )
 
 
-def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation - Laura
+def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # TODO Spline-Interpolation - Laura
 
     imputed = op_sales_masked.copy()
 
@@ -374,11 +390,7 @@ def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2): 
         # Polynomial braucht genug bekannte Werte
         if s.notna().sum() > order:
 
-            interpolated = s.interpolate(
-                method="polynomial",
-                order=order,
-                limit_direction="both"
-            )
+            interpolated = s.interpolate(method="polynomial", order=order, limit_direction="both")
 
         else:
             interpolated = s.copy()
@@ -408,9 +420,7 @@ def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2): 
         f"{history['recovered_daily_sales_interpolation_polynomial'].mean():.4f}"
     )
 
-def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura TODO lädt über 9 min (nicht fertig laden lassen) - Laura
-
-    from statsmodels.tsa.statespace.structural import UnobservedComponents
+def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura 
 
     imputed = op_sales_masked.copy()
 
@@ -427,10 +437,7 @@ def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothi
         else:
             try:
                 # Local level model = einfaches State-Space-Modell
-                model = UnobservedComponents(
-                    s,
-                    level="local level"
-                )
+                model = UnobservedComponents(s, level="local level")
 
                 result = model.fit(disp=False)
 
@@ -488,8 +495,7 @@ def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): #
     print(f"Alpha used: {alpha}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_kalman_like'].mean():.4f}")
 
-def stl_real(history, op_sales_masked, outside_slice, period=7): # TODO lädt über 5 min (nicht fertig laden lassen) - Laura
-    from statsmodels.tsa.seasonal import STL
+def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
@@ -509,11 +515,7 @@ def stl_real(history, op_sales_masked, outside_slice, period=7): # TODO lädt ü
         s_filled = s_filled.fillna(fallback)
 
         try:
-            stl = STL(
-                s_filled,
-                period=period,
-                robust=True
-            )
+            stl = STL(s_filled, period=period, robust=True)
 
             result = stl.fit()
 
@@ -598,19 +600,14 @@ def stl_based(history, op_sales_masked, outside_slice, period=7):
 
 # ML-basierte Recovery-Methoden: - Laura
 
-def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # KNN-Imputation - Laura
-
-    from sklearn.impute import KNNImputer
+def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura KNN-Imputation - Laura
 
     imputed = op_sales_masked.copy()
 
     imputed_count = np.isnan(imputed).sum()
 
     # KNNImputer arbeitet spaltenweise über die 16 Stunden
-    imputer = KNNImputer(
-        n_neighbors=n_neighbors,
-        weights="distance"
-    )
+    imputer = KNNImputer(n_neighbors=n_neighbors, weights="distance")
 
     imputed = imputer.fit_transform(imputed)
 
@@ -631,17 +628,12 @@ def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # KNN-Imputati
 
 def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
 
-    from sklearn.ensemble import RandomForestRegressor
-    import time
-
     print("\n=== Random Forest Recovery ===")
 
     start_total = time.time()
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
-
-    n_rows, n_hours = imputed.shape
 
     print(f"Matrix shape: {imputed.shape}")
     print(f"Missing values: {imputed_count:,}")
@@ -650,7 +642,8 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
     # 1. Trainingsdaten: nur sichtbare Stundenwerte
     # ------------------------------------------------------------
 
-    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+    rows_obs, hours_obs = np.where(~np.isnan(imputed)) # gibt alle Indizes der sichtbaren Stundenwerte zurück (rows_obs, hours_obs)
+
 
     X_obs = pd.DataFrame({
         "hour": hours_obs,
@@ -694,13 +687,7 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
     # 3. Modell trainieren
     # ------------------------------------------------------------
 
-    model = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=12,
-        min_samples_leaf=20,
-        n_jobs=-1,
-        random_state=random_state
-    )
+    model = RandomForestRegressor(n_estimators=50, max_depth=12, min_samples_leaf=20, n_jobs=-1, random_state=random_state)
 
     print("Training Random Forest...")
     start_fit = time.time()
@@ -767,17 +754,12 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
 
 def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
 
-    import time
-    import lightgbm as lgb
-
     print("\n=== LightGBM Recovery ===")
 
     start_total = time.time()
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
-
-    n_rows, n_hours = imputed.shape
 
     print(f"Matrix shape: {imputed.shape}")
     print(f"Missing values: {imputed_count:,}")
@@ -830,19 +812,8 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
     # 3. Modell trainieren
     # ------------------------------------------------------------
 
-    model = lgb.LGBMRegressor(
-        n_estimators=300,
-        learning_rate=0.05,
-        max_depth=-1,
-        num_leaves=64,
-        min_child_samples=50,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        objective="regression",
-        n_jobs=-1,
-        random_state=random_state,
-        verbosity=-1
-    )
+    model = lgb.LGBMRegressor(n_estimators=300, learning_rate=0.05, max_depth=-1, num_leaves=64, min_child_samples=50,
+        subsample=0.8, colsample_bytree=0.8, objective="regression", n_jobs=-1, random_state=random_state, verbosity=-1)
 
     print("Training LightGBM...")
     start_fit = time.time()
@@ -909,17 +880,12 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
 
 def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
 
-    import time
-    from xgboost import XGBRegressor
-
     print("\n=== XGBoost Recovery ===")
 
     start_total = time.time()
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
-
-    n_rows, n_hours = imputed.shape
 
     print(f"Matrix shape: {imputed.shape}")
     print(f"Missing values: {imputed_count:,}")
@@ -972,18 +938,8 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
     # 3. Modell trainieren
     # ------------------------------------------------------------
 
-    model = XGBRegressor(
-        n_estimators=300,
-        learning_rate=0.05,
-        max_depth=8,
-        min_child_weight=10,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        objective="reg:squarederror",
-        n_jobs=-1,
-        random_state=random_state,
-        tree_method="hist"
-    )
+    model = XGBRegressor(n_estimators=300, learning_rate=0.05, max_depth=8, min_child_weight=10, subsample=0.8,
+        colsample_bytree=0.8, objective="reg:squarederror", n_jobs=-1, random_state=random_state, tree_method="hist")
 
     print("Training XGBoost...")
     start_fit = time.time()
@@ -1048,12 +1004,7 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
     print(f"Mean recovered sales: {history['recovered_daily_sales_xgboost'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
-def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # Iterative Imputation / MICE - Laura
-
-    import time
-    from sklearn.experimental import enable_iterative_imputer  # noqa: F401
-    from sklearn.impute import IterativeImputer
-    from sklearn.ensemble import ExtraTreesRegressor
+def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
 
     print("\n=== Iterative Imputation Recovery ===")
 
@@ -1066,23 +1017,9 @@ def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=
     print(f"Missing values: {imputed_count:,}")
     print(f"Max iterations: {max_iter}")
 
-    estimator = ExtraTreesRegressor(
-        n_estimators=30,
-        max_depth=10,
-        min_samples_leaf=20,
-        n_jobs=-1,
-        random_state=random_state
-    )
+    estimator = ExtraTreesRegressor(n_estimators=30, max_depth=10, min_samples_leaf=20, n_jobs=-1, random_state=random_state)
 
-    imputer = IterativeImputer(
-        estimator=estimator,
-        max_iter=max_iter,
-        initial_strategy="mean",
-        imputation_order="ascending",
-        random_state=random_state,
-        skip_complete=True,
-        verbose=1
-    )
+    imputer = IterativeImputer(estimator=estimator, max_iter=max_iter, initial_strategy="mean", imputation_order="ascending", random_state=random_state, skip_complete=True, verbose=1)
 
     print("Starting iterative imputation...")
     start_impute = time.time()
@@ -1104,14 +1041,12 @@ def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=
     print(f"Mean recovered sales: {history['recovered_daily_sales_iterative'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
-
 # Spezifische Demandrevovery Modelle: - Nils
 
 def lost_sales_model(history): # was ist das? Laut ChatGPT ein Überbegriff für Modelle, die versuchen verlorene Umsätze zu schätzen, z.B. mit Random Forest oder XGBoost. 
     return
 
-# test letztes von Claude AI
-def tobit_model(history):
+def tobit_model(history): # TODO
     # ---------- FEATURES ----------
     hours_matrix = np.vstack(history["hours_sale"].values)
 
@@ -1173,12 +1108,7 @@ def tobit_model(history):
         return -(ll_obs.sum() + ll_cen.sum())
 
     n_features = X.shape[1]
-    result = minimize(
-        neg_log_likelihood,
-        np.zeros(n_features + 1, dtype=np.float64),
-        method="L-BFGS-B",
-        options={"maxiter": 1000, "ftol": 1e-9},
-    )
+    result = minimize(neg_log_likelihood, np.zeros(n_features + 1, dtype=np.float64), method="L-BFGS-B", options={"maxiter": 1000, "ftol": 1e-9},)
 
     beta_hat  = result.x[:-1]
     sigma_hat = float(np.exp(result.x[-1]))
@@ -1191,101 +1121,12 @@ def tobit_model(history):
     lambda_  = pdf_a / np.maximum(cdf_a, 1e-12)
 
     e_y_star = mu_hat + sigma_hat * lambda_
-    history["recovered_daily_sales_tobit"] = np.where(
-        is_censored, np.maximum(e_y_star, 0), y
-    )
+    history["recovered_daily_sales_tobit"] = np.where(is_censored, np.maximum(e_y_star, 0), y)
 
     print(f"Converged: {result.success} | {result.message}")
     print(f"sigma_hat: {sigma_hat:.4f}")
     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales:  {history['recovered_daily_sales_tobit'].mean():.4f}")
-
-# ── per-series worker (must be top-level for pickling) ──────────────────────
-def _fit_one_series(args):
-    (store_id, product_id), df = args
-
-    df = df.reset_index(drop=True)
-    n  = len(df)
-
-    # need enough obs to identify the model
-    if n < 15:
-        return store_id, product_id, None, "too_few_rows"
-
-    # ── features ────────────────────────────────────────────────────────────
-    hours_matrix = np.vstack(df["hours_sale"].values)
-    hours_stock  = np.vstack(df["hours_stock_status"].values)
-    peak         = slice(9, 21)
-
-    hours_features = np.column_stack([
-        hours_matrix[:, peak].sum(axis=1),
-        hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
-        hours_stock[:, peak].sum(axis=1),
-        np.clip(1 - df["stock_hour6_22_cnt"].values / 16, 1e-3, 1 - 1e-3),
-    ])
-
-    dt = pd.to_datetime(df["dt"])
-    base = np.column_stack([
-        dt.dt.dayofweek.values,
-        df["avg_temperature"].fillna(0).values,
-        df["avg_humidity"].fillna(0).values,
-        df["avg_wind_level"].fillna(0).values,
-        df["precpt"].fillna(0).values,
-        df["holiday_flag"].values,
-        df["activity_flag"].values,
-        df["discount"].values,
-        np.ones(n),
-    ])
-
-    X           = np.hstack([base, hours_features]).astype(np.float64)
-    y           = df["sale_amount"].values.astype(np.float64)
-    is_censored = df["is_censored"].values.astype(bool)
-    obs_mask    = ~is_censored
-
-    if obs_mask.sum() < 5:
-        return store_id, product_id, None, "too_few_observed"
-
-    X_obs, y_obs       = X[obs_mask], y[obs_mask]
-    X_cen              = X[is_censored]
-    avail_frac_cen     = hours_features[is_censored, 3]
-    cen_weight         = (1 - avail_frac_cen)
-
-    LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
-
-    def neg_ll(params):
-        beta, log_sigma = params[:-1], params[-1]
-        sigma = np.exp(log_sigma)
-
-        z      = (y_obs - X_obs @ beta) / sigma
-        ll_obs = (-log_sigma - LOG_SQRT_2PI - 0.5 * z * z).sum()
-
-        if X_cen.shape[0] > 0:
-            ll_cen = (log_ndtr(-(X_cen @ beta) / sigma) * cen_weight).sum()
-        else:
-            ll_cen = 0.0
-
-        return -(ll_obs + ll_cen)
-
-    result = minimize(
-        neg_ll,
-        np.zeros(X.shape[1] + 1),
-        method="L-BFGS-B",
-        options={"maxiter": 1000, "ftol": 1e-9},
-    )
-
-    beta_hat  = result.x[:-1]
-    sigma_hat = np.exp(result.x[-1])
-
-    mu      = X @ beta_hat
-    alpha   = mu / sigma_hat
-    lambda_ = np.exp(-0.5 * alpha**2) / (np.sqrt(2 * np.pi) * np.maximum(ndtr(alpha), 1e-12))
-
-    recovered = np.where(is_censored, np.maximum(mu + sigma_hat * lambda_, 0), y)
-
-    out = df[["store_id", "product_id", "dt"]].copy()
-    out["recovered_daily_sales_tobit"] = recovered
-    out["converged"]                   = result.success
-
-    return store_id, product_id, out, "ok"
 
 
 def bayesian_model_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
@@ -1520,18 +1361,10 @@ def bayesian_model(history):  # Bayesisches Modell mit NUTS
     n_samples = 1000
     n_warmup  = 300
 
-    rng      = np.random.default_rng(42)
-    np.random.seed(42)
-
     params0  = np.zeros(n_features + 1)
 
     # MAP initialisierung für besseren Startpunkt
-    map_result = minimize(
-        lambda p: -log_posterior_and_grad(p)[0],
-        params0,
-        jac=lambda p: -log_posterior_and_grad(p)[1],
-        method="L-BFGS-B",
-    )
+    map_result = minimize(lambda p: -log_posterior_and_grad(p)[0], params0, jac=lambda p: -log_posterior_and_grad(p)[1], method="L-BFGS-B",)
     params_curr = map_result.x
     print("MAP initialization done, starting NUTS warmup...")
 
@@ -1566,9 +1399,11 @@ def inventory_aware_model(history): # inventory aware model is a forecasting met
     return
 
 
-# Deep Learning basierte Recovery-Methoden: - Nils
+# Deep Learning basierte Recovery-Methoden: - Nils 
 
-def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8):
+# TODO Nils autoencoder und transformer model.fit mit zweimal dem gleichen Input
+
+def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8): # TODO
     """
     Autoencoder-based recovery using sklearn MLPRegressor (input == output).
     - Trained only on fully uncensored days
@@ -1584,7 +1419,7 @@ def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8
     clean_profiles = op_sales_masked[clean_mask]
 
     # Drop rows with any NaN in clean set
-    valid = ~np.isnan(clean_profiles).any(axis=1)
+    valid = ~np.isnan(clean_profiles)
     clean_profiles = clean_profiles[valid]
 
     if len(clean_profiles) < 32:
@@ -1597,14 +1432,7 @@ def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8
     clean_norm = scaler.fit_transform(clean_profiles)  # (n_clean, 16)
 
     # ── 3. Train MLP as autoencoder (input == output) ────────────────────────
-    model = MLPRegressor(
-        hidden_layer_sizes=(32, latent_dim, 32),
-        activation="relu",
-        max_iter=epochs,
-        random_state=42,
-        early_stopping=True,
-        validation_fraction=0.1,
-    )
+    model = MLPRegressor(hidden_layer_sizes=(32, latent_dim, 32), activation="relu", max_iter=epochs, random_state=42, early_stopping=True, validation_fraction=0.1,)
     model.fit(clean_norm, clean_norm)
     print(f"Autoencoder trained on {len(clean_profiles):,} clean days")
 
@@ -1641,24 +1469,10 @@ def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount:            {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales (autoenc):  {history['recovered_daily_sales_autoencoder'].mean():.4f}")
-
+    
 #def transformer(history): # SAITS, BRITS, GRIN, CSDI
-    return
 
-def transformer(
-    history,
-    op_sales_masked,
-    outside_slice,
-    epochs=20,
-    batch_size=1024,
-    random_state=42
-):  # Transformer-basierte Imputation - Laura
-
-    import time
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
+def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
 
     print("\n=== Transformer Recovery ===")
     start_total = time.time()
@@ -1672,7 +1486,7 @@ def transformer(
     # 1. Trainingsdaten: nur vollständig sichtbare Profile
     # ------------------------------------------------------------
 
-    clean_mask = ~np.isnan(imputed).any(axis=1)
+    clean_mask = ~np.isnan(imputed)
     clean_profiles = imputed[clean_mask]
 
     if len(clean_profiles) < 100:
@@ -1687,12 +1501,19 @@ def transformer(
     # 2. Skalieren
     # ------------------------------------------------------------
 
+    from sklearn.model_selection import train_test_split
+
+    X_train, y_train = train_test_split(clean_profiles, test_size=0.1, random_state=random_state)
+
     scaler = StandardScaler()
-    clean_scaled = scaler.fit_transform(clean_profiles)
+    X_train_scaled = scaler.fit_transform(X_train)
+    y_train_scaled = scaler.transform(y_train)
 
-    X_train = torch.tensor(clean_scaled, dtype=torch.float32)
+    X_train = torch.tensor(X_train_scaled, dtype=torch.float32)
+    y_train = torch.tensor(y_train_scaled, dtype=torch.float32)
 
-    dataset = TensorDataset(X_train, X_train)
+
+    dataset = TensorDataset(X_train, y_train)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # ------------------------------------------------------------
@@ -1705,17 +1526,9 @@ def transformer(
 
             self.input_proj = nn.Linear(1, d_model)
 
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=64,
-                batch_first=True
-            )
+            encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=64, batch_first=True)
 
-            self.encoder = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=num_layers
-            )
+            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
             self.output_proj = nn.Linear(d_model, 1)
 
@@ -1808,9 +1621,7 @@ def transformer(
     print(f"Mean recovered sales: {history['recovered_daily_sales_transformer'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
-def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
-
-    import time
+def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # TODO Diffusion-like Recovery - Laura
 
     print("\n=== Diffusion-like Recovery ===")
 
@@ -1835,11 +1646,7 @@ def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_
     hour_std = np.nanstd(imputed, axis=0)
 
     # Falls std 0 oder NaN ist
-    hour_std = np.where(
-        np.isnan(hour_std) | (hour_std == 0),
-        1e-6,
-        hour_std
-    )
+    hour_std = np.where(np.isnan(hour_std) | (hour_std == 0), 1e-6, hour_std)
 
     nan_mask = np.isnan(imputed)
 
@@ -1851,11 +1658,7 @@ def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_
 
     for i in range(n_samples):
 
-        noise = rng.normal(
-            loc=0,
-            scale=noise_scale,
-            size=imputed.shape
-        )
+        noise = rng.normal(loc=0, scale=noise_scale, size=imputed.shape)
 
         sample = hour_mean + noise * hour_std
 
