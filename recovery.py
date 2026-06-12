@@ -1081,6 +1081,59 @@ def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=
     print(f"Mean recovered sales: {history['recovered_daily_sales_iterative'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
+def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, random_state=42): #lädt über 5 Stunden dass hier: === Running recovery method: iterative_improved at 2026-06-12 14:42:30.694867 === === Improved Iterative Imputation Recovery === Starting iterative imputation... [IterativeImputer] Completing matrix with shape (4500000, 16) [IterativeImputer] Change: 14.01937198638916, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 4.824539661407471, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 2.6994433403015137, scaled tolerance: 0.01690000109374523
+    import time
+    from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+    from sklearn.impute import IterativeImputer
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    print("\n=== Improved Iterative Imputation Recovery ===")
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    # Erst grob mit Stundenmittel füllen als stabilerer Start
+    hour_means = np.nanmean(imputed, axis=0)
+    initial = np.where(np.isnan(imputed), hour_means, imputed)
+
+    estimator = ExtraTreesRegressor(
+        n_estimators=50,
+        max_depth=12,
+        min_samples_leaf=10,
+        n_jobs=-1,
+        random_state=random_state
+    )
+
+    imputer = IterativeImputer(
+        estimator=estimator,
+        max_iter=max_iter,
+        initial_strategy="mean",
+        imputation_order="roman",
+        random_state=random_state,
+        skip_complete=True,
+        verbose=1
+    )
+
+    print("Starting iterative imputation...")
+    imputed_new = imputer.fit_transform(imputed)
+
+    # Nur ursprüngliche NaNs ersetzen, sichtbare Werte behalten
+    missing_mask = np.isnan(op_sales_masked)
+    imputed[missing_mask] = imputed_new[missing_mask]
+
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_iterative_improved"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_iterative_improved'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
 # Spezifische Demandrevovery Modelle: - Nils
 
 def lost_sales_model(history): # was ist das? Laut ChatGPT ein Überbegriff für Modelle, die versuchen verlorene Umsätze zu schätzen, z.B. mit Random Forest oder XGBoost. 
@@ -1168,6 +1221,164 @@ def tobit_model(history): # TODO
     print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales:  {history['recovered_daily_sales_tobit'].mean():.4f}")
 
+def tobit_model_improved(history):  # Tobit / censored regression for stockout recovery - Laura === Running recovery method: tobit_improved at 2026-06-12 19:46:54.791141 ===
+# Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT
+# sigma_hat: 0.1123
+# Mean raw sale_amount:  0.9986
+# Mean recovered sales:  0.5498
+# Gespeichert: [0.  0.  5.3 ... 4.2 2.2 2.1]
+# Verarbeitungszeit:  1:10:42.476935
+
+    import numpy as np
+    import pandas as pd
+    from scipy.optimize import minimize
+    from scipy.special import log_ndtr
+    from scipy.stats import norm
+    from sklearn.preprocessing import StandardScaler
+
+    print("\n=== Tobit Recovery Model ===")
+
+    # ---------- FEATURES ----------
+    hours_matrix = np.vstack(history["hours_sale"].values)
+    hours_stock = np.vstack(history["hours_stock_status"].values)
+
+    peak_hours = slice(9, 21)
+
+    hours_features = pd.DataFrame({
+        "peak_sales": hours_matrix[:, peak_hours].sum(axis=1),
+        "offpeak_sales": hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
+        "peak_stockout_h": hours_stock[:, peak_hours].sum(axis=1),
+        "avail_frac": 1 - history["stock_hour6_22_cnt"].values / 16,
+    }, index=history.index)
+
+    base_df = pd.DataFrame({
+        "weekday": pd.to_datetime(history["dt"]).dt.dayofweek,
+        "temperature": history["avg_temperature"],
+        "humidity": history["avg_humidity"],
+        "wind": history["avg_wind_level"],
+        "precpt": history["precpt"],
+        "holiday": history["holiday_flag"],
+        "activity": history["activity_flag"],
+        "discount": history["discount"],
+    }, index=history.index).fillna(0)
+
+    X_df = pd.concat([base_df, hours_features], axis=1).fillna(0)
+
+    y = history["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = history["is_censored"].values.astype(bool).ravel()
+
+    # ---------- SCALE FEATURES ----------
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_df.values.astype(np.float64))
+
+    # Intercept hinzufügen
+    X = np.column_stack([np.ones(len(X_scaled)), X_scaled])
+
+    obs_mask = ~is_censored
+    cen_mask = is_censored
+
+    X_obs = X[obs_mask]
+    y_obs = y[obs_mask]
+
+    X_cen = X[cen_mask]
+    y_cen = y[cen_mask]
+
+    avail_frac_cen = hours_features["avail_frac"].values[cen_mask].clip(1e-3, 1 - 1e-3)
+
+    _LOG_SQRT_2PI = 0.5 * np.log(2 * np.pi)
+
+    # ---------- NEGATIVE LOG LIKELIHOOD ----------
+    def neg_log_likelihood(params):
+        beta = params[:-1]
+        log_sigma = params[-1]
+
+        sigma = np.exp(log_sigma)
+
+        mu_obs = X_obs @ beta
+        mu_cen = X_cen @ beta
+
+        # Uncensored observations:
+        # y observed as normal outcome
+        z_obs = (y_obs - mu_obs) / sigma
+
+        ll_obs = (
+            -log_sigma
+            - _LOG_SQRT_2PI
+            - 0.5 * (z_obs ** 2)
+        )
+
+        # Censored observations:
+        # observed sales are a lower bound for true demand
+        # P(Y >= y_cen) = 1 - Phi((y_cen - mu) / sigma)
+        z_cen = (y_cen - mu_cen) / sigma
+
+        ll_cen = log_ndtr(-z_cen)
+
+        # stronger weighting when stockout severity is higher
+        ll_cen = ll_cen * (1 - avail_frac_cen)
+
+        return -(ll_obs.sum() + ll_cen.sum())
+
+    # ---------- INITIALIZATION ----------
+    n_features = X.shape[1]
+
+    # OLS-like initialization on uncensored data
+    beta_init, *_ = np.linalg.lstsq(X_obs, y_obs, rcond=None)
+
+    residuals = y_obs - X_obs @ beta_init
+    sigma_init = np.std(residuals)
+
+    if sigma_init <= 0 or np.isnan(sigma_init):
+        sigma_init = np.std(y_obs)
+
+    if sigma_init <= 0 or np.isnan(sigma_init):
+        sigma_init = 1.0
+
+    params_init = np.append(beta_init, np.log(sigma_init))
+
+    # ---------- OPTIMIZATION ----------
+    result = minimize(
+        neg_log_likelihood,
+        params_init,
+        method="L-BFGS-B",
+        options={
+            "maxiter": 3000,
+            "ftol": 1e-7,
+            "maxfun": 50000
+        },
+    )
+
+    beta_hat = result.x[:-1]
+    sigma_hat = float(np.exp(result.x[-1]))
+
+    # ---------- PREDICT LATENT DEMAND ----------
+    mu_hat = (X @ beta_hat).ravel()
+
+    # Expected value conditional on Y >= observed y for censored rows
+    z_all = (y - mu_hat) / sigma_hat
+
+    pdf = norm.pdf(z_all)
+    survival = np.maximum(1 - norm.cdf(z_all), 1e-12)
+
+    lambda_ = pdf / survival
+
+    expected_if_censored = mu_hat + sigma_hat * lambda_
+
+    recovered = np.where(
+        is_censored,
+        np.maximum(expected_if_censored, y),
+        y
+    )
+
+    history["recovered_daily_sales_tobit"] = recovered
+
+    print(f"Converged: {result.success} | {result.message}")
+    print(f"sigma_hat: {sigma_hat:.4f}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_tobit'].mean():.4f}")
+
+    if not result.success:
+        print("Warning: Tobit optimization did not fully converge.")
 
 def bayesian_model_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
     # ---------- FEATURES (identisch zu Tobit) ----------

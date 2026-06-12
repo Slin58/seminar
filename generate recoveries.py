@@ -126,11 +126,11 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_interpolation_spline",
     # },
 
-    "interpolation_spline_series": {
-        "func": recovery.interpolation_spline_series,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_interpolation_spline_series",
-    },
+    # "interpolation_spline_series": {
+    #     "func": recovery.interpolation_spline_series,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_interpolation_spline_series",
+    # },
 
 
     # "interpolation_polynomial": {
@@ -197,6 +197,12 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_iterative",
     # },
 
+    # "iterative_improved": {
+    #     "func": recovery.iterative_improved,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_iterative_improved",
+    # },
+
     # "transformer": {
     #     "func": recovery.transformer,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -216,6 +222,12 @@ recovery_methods = {
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_tobit",
     # },
+
+    "tobit_improved": {
+        "func": recovery.tobit_model,
+        "args": (history,),
+        "target_col": "recovered_daily_sales_tobit",
+    },
 
     # "bayesian_model": {
     #     "func": recovery.bayesian_model,
