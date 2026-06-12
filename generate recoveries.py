@@ -126,6 +126,13 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_interpolation_spline",
     # },
 
+    "interpolation_spline_series": {
+        "func": recovery.interpolation_spline_series,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_interpolation_spline_series",
+    },
+
+
     # "interpolation_polynomial": {
     #     "func": recovery.interpolation_polynomial,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -166,11 +173,11 @@ recovery_methods = {
 
 
 
-    "random_forest": {
-        "func": recovery.random_forest,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_random_forest",
-    },
+    # "random_forest": {
+    #     "func": recovery.random_forest,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_random_forest",
+    # },
 
     # "lightgbm": {
     #     "func": recovery.lightgbm,

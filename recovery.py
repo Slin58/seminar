@@ -335,28 +335,68 @@ def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare In
     )
 
 
-def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # TODO Spline-Interpolation - Laura
+#  def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # TODO Spline-Interpolation - Laura
 
+#     imputed = op_sales_masked.copy()
+
+#     imputed_count = np.isnan(imputed).sum()
+#     n_hours = imputed.shape[1]
+
+#     for h in range(n_hours):
+
+#         s = pd.Series(imputed[:, h])
+
+#         # Spline braucht genug bekannte Werte
+#         if s.notna().sum() > order:
+#             interpolated = s.interpolate(
+#                 method="spline",
+#                 order=order,
+#                 limit_direction="both"
+#             )
+#         else:
+#             interpolated = s.copy()
+
+#         # Fallback für übrige NaNs
+#         fallback = s.mean()
+#         interpolated = interpolated.fillna(fallback)
+
+#         imputed[:, h] = interpolated.values
+
+#     imputed = np.maximum(imputed, 0)
+
+#     recovered_sum = np.nansum(imputed, axis=1)
+#     recovered_daily = outside_slice + recovered_sum
+
+#     history["recovered_daily_sales_interpolation_spline"] = recovered_daily
+
+#     print(f"Imputed {imputed_count:,} hourly cells")
+#     print(f"Spline order used: {order}")
+#     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+#     print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
+
+def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3):
     imputed = op_sales_masked.copy()
-
     imputed_count = np.isnan(imputed).sum()
+
+    series_ids = history["series_id"].values
     n_hours = imputed.shape[1]
 
     for h in range(n_hours):
-
         s = pd.Series(imputed[:, h])
 
-        # Spline braucht genug bekannte Werte
-        if s.notna().sum() > order:
-            interpolated = s.interpolate(
-                method="spline",
-                order=order,
-                limit_direction="both"
-            )
-        else:
-            interpolated = s.copy()
+        # Interpolation nur innerhalb derselben series_id
+        interpolated = (
+            s.groupby(series_ids)
+             .transform(
+                 lambda x: x.interpolate(
+                     method="spline",
+                     order=order,
+                     limit_direction="both"
+                 ) if x.notna().sum() > order else x
+             )
+        )
 
-        # Fallback für übrige NaNs
+        # Fallback pro Stunde
         fallback = s.mean()
         interpolated = interpolated.fillna(fallback)
 
@@ -367,12 +407,12 @@ def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # T
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_interpolation_spline"] = recovered_daily
+    history["recovered_daily_sales_interpolation_spline_series"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Spline order used: {order}")
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline_series'].mean():.4f}")
 
 def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
 
