@@ -10,7 +10,7 @@ print(torch.cuda.is_available())
 print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 
-ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
+ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K", token="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")
 
 # Data preparation
 train_raw = ds["train"].to_pandas()
