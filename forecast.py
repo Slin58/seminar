@@ -4,6 +4,21 @@ import warnings
 import numpy as np
 import pandas as pd
 
+# TODO: Forecast Methoden:
+
+# - random_forest (xgboost)
+# - lightgbm
+# - CNN
+# - RNN, LSTM oder Transformer
+# - Gaussian Process Regression
+
+# Nils:
+# - exponential smoothing (Holt-Winters) pro series_id, mit Fallbacks -> dauert wahrscheinlich zu lange
+# - simple tripple exponential smoothing
+
+# Laura: 
+# - arima
+# - sarima
 
 def global_mean(train_df, val_df, target_col):
     """
@@ -80,6 +95,51 @@ def rolling_28d(train_df, val_df, target_col):
         val_pred["series_id"].map(fallback)
     )
 
+    global_fallback = train_df[target_col].mean()
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3):
+    """
+    Simple Exponential Smoothing (SES).
+
+    Pro series_id wird der exponentiell geglättete Level am Ende der
+    Trainingsdaten berechnet:
+
+        S_1 = y_1
+        S_t = alpha * y_t + (1 - alpha) * S_{t-1}
+
+    Der finale Level S_T wird als konstanter Forecast für alle
+    Validierungstage der jeweiligen series_id verwendet.
+
+    alpha: Glättungsfaktor zwischen 0 und 1.
+           - alpha nah an 1 -> reagiert stark auf die letzten Werte
+           - alpha nah an 0 -> glättet stark, reagiert langsam
+    """
+    val_pred = val_df.copy()
+
+    train_sorted = train_df.sort_values(["series_id", "day_idx"])
+
+    levels = (
+        train_sorted.groupby("series_id")[target_col]
+        .apply(lambda s: s.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
+    )
+    levels.name = "prediction"
+
+    val_pred = val_pred.merge(
+        levels.reset_index(), on="series_id", how="left"
+    )
+
+    # Fallback 1: series_id Durchschnitt (falls series_id nicht in train)
+    fallback_series = train_df.groupby("series_id")[target_col].mean()
+    val_pred["prediction"] = val_pred["prediction"].fillna(
+        val_pred["series_id"].map(fallback_series)
+    )
+
+    # Fallback 2: globaler Durchschnitt
     global_fallback = train_df[target_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
 

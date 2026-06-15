@@ -10,7 +10,7 @@ print(torch.cuda.is_available())
 print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 
-ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K", token="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")
+ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
 
 # Data preparation
 train_raw = ds["train"].to_pandas()
@@ -250,12 +250,12 @@ for recovery_name, method in recovery_methods.items():
 
     print("Verarbeitungszeit: ", processing_time)
 
-    with open("recovered_column/processing_time.json", "r") as f:
+    with open("recovered_column/recovery_processing_time.json", "r") as f:
         content = f.read()
         time = json.loads(content) if content.strip() else {}
 
     time[method['target_col']] = processing_time.total_seconds()
 
-    with open("recovered_column/processing_time.json", "w") as f:
+    with open("recovered_column/recovery_processing_time.json", "w") as f:
         json.dump(time, f)
 
