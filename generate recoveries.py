@@ -1,17 +1,16 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from IPython.display import display
-import importlib
 import utils
 import recovery
-import os
-os.system("pip install -q pandas pyarrow matplotlib seaborn datasets") # TODO
 from datasets import load_dataset
 
+import torch
+print(torch.__version__)
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
-ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
+
+ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K", token="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")
 
 # Data preparation
 train_raw = ds["train"].to_pandas()
@@ -59,163 +58,131 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice, rng),
     #     "target_col": "recovered_daily_sales_random_sampling",
     # },
-
     # "global_mean": {
     #     "func": recovery.global_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_global_mean",
     # },
-
     # "per_series_mean": {
     #     "func": recovery.per_series_mean,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_per_series_mean",
     # },
-
     # "hourly_mean": {
     #     "func": recovery.hourly_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_hourly_mean",
     # },
-
     # "hour_per_series_mean": {
     #     "func": recovery.hour_per_series_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_hour_per_series_mean",
     # },
-
     # "weekday_mean": {
     #     "func": recovery.weekday_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_weekday_mean",
     # },
-
     # "weekday_daily_mean": {
     #     "func": recovery.weekday_daily_mean,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_weekday_daily_mean",
     # },
-
     # "rolling_mean": {
     #     "func": recovery.rolling_mean,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_rolling_mean",
     # },
-
     # "ema": {
     #     "func": recovery.exponential_moving_average,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_exponential_moving_average",
     # },
-
     # "ema_series": {
     #     "func": recovery.exponential_moving_average_series,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
     # },
-
     # "interpolation_linear": {
     #     "func": recovery.interpolation_linear,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_interpolation_linear",
     # },
-
     # "interpolation_spline": {
     #     "func": recovery.interpolation_spline,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_interpolation_spline",
     # },
-
     # "interpolation_polynomial": {
     #     "func": recovery.interpolation_polynomial,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_interpolation_polynomial",
     # },
-
-
-
     # "kalman_smoothing": {
     #     "func": recovery.kalman_smoothing,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_kalman_smoothing",
     # },
-
     # "kalman_like": {
     #     "func": recovery.kalman_like_smoothing,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_kalman_like",
     # },
-
     # "stl_real": {
     #     "func": recovery.stl_real,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_stl_real",
     # },
-
     # "stl_based": {
     #     "func": recovery.stl_based,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_stl_based",
     # },
-
     # "knn": {
     #     "func": recovery.knn,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_knn",
     # },
-
-
-
-    "random_forest": {
-        "func": recovery.random_forest,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_random_forest",
-    },
-
+    # "random_forest": {
+    #     "func": recovery.random_forest,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_random_forest",
+    # },
     # "lightgbm": {
     #     "func": recovery.lightgbm,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_lightgbm",
     # },
-
     # "xgboost": {
     #     "func": recovery.xgboost,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_xgboost",
     # },
-
     # "iterative": {
     #     "func": recovery.iterative,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_iterative",
     # },
-
     # "transformer": {
     #     "func": recovery.transformer,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_transformer",
     # },
-
     # "diffusion_model": {
     #     "func": recovery.diffusion_model,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_diffusion",
     # },
-
-
-
     # "tobit_model": {
     #     "func": recovery.tobit_model,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_tobit",
     # },
-
     # "bayesian_model": {
     #     "func": recovery.bayesian_model,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_bayesian",  
     # },
-
     # "autoencoder": {
     #     "func": recovery.autoencoder,
     #     "args": (history, op_sales_masked, outside_slice),

@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor
+from sklearn.model_selection import train_test_split
 
 import torch
 import torch.nn as nn
@@ -177,7 +178,6 @@ def weekday_daily_mean(history):  # Durchschnitt desselben Wochentags - Nils
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_daily_mean'].mean():.4f}")
 
-   
 
 def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
@@ -1403,29 +1403,17 @@ def inventory_aware_model(history): # inventory aware model is a forecasting met
 
 # TODO Nils autoencoder und transformer model.fit mit zweimal dem gleichen Input
 
-def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8): # TODO
+def autoencoder_old(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8): # TODO
     """
     Autoencoder-based recovery using sklearn MLPRegressor (input == output).
-    - Trained only on fully uncensored days
-    - Reconstructs the full 16h profile for censored days
     - Missing hours are replaced by the reconstruction
     - Observed hours are kept as-is
     """
+    imputed = op_sales_masked.copy()
 
     # ── 1. Prepare data ──────────────────────────────────────────────────────
-    is_censored = history["is_censored"].values
-
-    clean_mask = is_censored == 0
-    clean_profiles = op_sales_masked[clean_mask]
-
-    # Drop rows with any NaN in clean set
-    valid = ~np.isnan(clean_profiles)
-    clean_profiles = clean_profiles[valid]
-
-    if len(clean_profiles) < 32:
-        print("Not enough clean days to train autoencoder — skipping.")
-        history["recovered_daily_sales_autoencoder"] = np.nan
-        return
+    clean_mask = ~np.isnan(imputed)
+    clean_profiles = imputed[clean_mask]
 
     # ── 2. Normalize ─────────────────────────────────────────────────────────
     scaler = StandardScaler()
@@ -1469,10 +1457,113 @@ def autoencoder(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Mean raw sale_amount:            {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales (autoenc):  {history['recovered_daily_sales_autoencoder'].mean():.4f}")
-    
+
+def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
+
+    # Architecture: input = [16 sales + 16 mask flags + 7 covariates] = 39-dim
+    # Encoder: 39 → 64 → latent_dim
+    # Decoder: latent_dim → 64 → 16  (reconstructs all hours)
+    # Loss: MSE on observed hours only (same censored-loss idea as transformer)
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    N, H = op_sales_masked.shape
+
+    # ── Covariates (same as transformer version) ──────────────────────────────
+    def norm(x): return (x - x.mean()) / (x.std() + 1e-8)
+
+    cov = np.column_stack([
+        norm(history["discount"].values),
+        history["holiday_flag"].values,
+        history["activity_flag"].values,
+        norm(history["avg_temperature"].values),
+        norm(history["avg_humidity"].values),
+        norm(history["precpt"].values),
+    ]).astype(np.float32)                          # (N, 6)
+
+    # ── Normalise sales ───────────────────────────────────────────────────────
+    observed = op_sales_masked[~np.isnan(op_sales_masked)]
+    sale_mean, sale_std = observed.mean(), observed.std() + 1e-8
+    sales_norm = (op_sales_masked - sale_mean) / sale_std
+    obs_mask   = (~np.isnan(sales_norm)).astype(np.float32)   # 1=observed, 0=censored
+    sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
+
+    # Input: sales (16) + obs_mask (16) + covariates (6) = 38
+    X    = np.concatenate([sales_input, obs_mask, cov], axis=1)   # (N, 38)
+    tgt  = sales_norm.copy().astype(np.float32)                    # (N, 16) — NaN in censored
+
+    T_X    = torch.tensor(X)
+    T_tgt  = torch.tensor(tgt)
+    T_obs  = torch.tensor(obs_mask, dtype=torch.bool)
+
+    loader = DataLoader(TensorDataset(T_X, T_tgt, T_obs),
+                        batch_size=batch_size, shuffle=True)
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    class DemandAE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder = nn.Sequential(
+                nn.Linear(38, 64), nn.GELU(),
+                nn.Linear(64, 32), nn.GELU(),
+                nn.Linear(32, latent_dim),
+            )
+            self.decoder = nn.Sequential(
+                nn.Linear(latent_dim, 32), nn.GELU(),
+                nn.Linear(32, 64),         nn.GELU(),
+                nn.Linear(64, H),          # reconstruct all 16 hours
+            )
+        def forward(self, x):
+            return self.decoder(self.encoder(x))
+
+    model = DemandAE().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # ── Train ─────────────────────────────────────────────────────────────────
+    print(f"Training autoencoder on {device}  |  params: {sum(p.numel() for p in model.parameters()):,}")
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total_loss, total_n = 0.0, 0
+        for x, tgt_b, obs_b in loader:
+            x, tgt_b, obs_b = x.to(device), tgt_b.to(device), obs_b.to(device)
+            pred = model(x)                              # (B, 16)
+            loss = nn.functional.huber_loss(pred[obs_b], tgt_b[obs_b], delta=1.0)
+            optimizer.zero_grad(); loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            total_loss += loss.item() * obs_b.sum().item()
+            total_n    += obs_b.sum().item()
+        scheduler.step()
+        if epoch % 5 == 0 or epoch == 1:
+            print(f"  Epoch {epoch:02d}/{epochs}  loss={total_loss/max(total_n,1):.5f}")
+
+    # ── Inference ─────────────────────────────────────────────────────────────
+    model.eval()
+    preds = []
+    with torch.no_grad():
+        for (x,) in DataLoader(TensorDataset(T_X), batch_size=batch_size):
+            preds.append(model(x.to(device)).cpu().numpy())
+    preds_denorm = (np.concatenate(preds) * sale_std + sale_mean).clip(0)
+
+    imputed = op_sales_masked.copy()
+    nan_mask = np.isnan(imputed)
+    imputed_count = nan_mask.sum()
+    imputed[nan_mask] = preds_denorm[nan_mask]
+
+    # ── Rebuild daily (same as global_mean / transformer) ─────────────────────
+    recovered_sum   = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+    history["recovered_daily_sales_autoencoder"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount:      {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:      {history['recovered_daily_sales_autoencoder'].mean():.4f}")
+
 #def transformer(history): # SAITS, BRITS, GRIN, CSDI
 
-def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
+def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
 
     print("\n=== Transformer Recovery ===")
     start_total = time.time()
@@ -1486,13 +1577,8 @@ def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1
     # 1. Trainingsdaten: nur vollständig sichtbare Profile
     # ------------------------------------------------------------
 
-    clean_mask = ~np.isnan(imputed)
+    clean_mask = ~np.isnan(imputed).any(axis=1)
     clean_profiles = imputed[clean_mask]
-
-    if len(clean_profiles) < 100:
-        print("Not enough clean profiles for transformer training.")
-        history["recovered_daily_sales_transformer"] = np.nan
-        return
 
     print(f"Clean training profiles: {len(clean_profiles):,}")
     print(f"Missing values to impute: {imputed_count:,}")
@@ -1501,26 +1587,26 @@ def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1
     # 2. Skalieren
     # ------------------------------------------------------------
 
-    from sklearn.model_selection import train_test_split
+    # Keep rows that have at least one non-NaN value for training
+    clean_mask = ~np.isnan(imputed).all(axis=1)
+    clean_profiles = imputed[clean_mask]
 
-    X_train, y_train = train_test_split(clean_profiles, test_size=0.1, random_state=random_state)
+    clean_profiles_filled = np.where(np.isnan(clean_profiles), np.nanmean(clean_profiles, axis=0), clean_profiles)
+
+    X_train, y_train = train_test_split(clean_profiles_filled, test_size=0.1, random_state=random_state)
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     y_train_scaled = scaler.transform(y_train)
 
-    X_train = torch.tensor(X_train_scaled, dtype=torch.float32)
-    y_train = torch.tensor(y_train_scaled, dtype=torch.float32)
-
-
-    dataset = TensorDataset(X_train, y_train)
+    dataset = TensorDataset(X_train_scaled, y_train_scaled)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # ------------------------------------------------------------
     # 3. Einfaches Transformer Autoencoder Modell
     # ------------------------------------------------------------
 
-    class TransformerAutoencoder(nn.Module):
+    class Transformer(nn.Module):
         def __init__(self, seq_len=16, d_model=32, nhead=4, num_layers=2):
             super().__init__()
 
@@ -1540,7 +1626,7 @@ def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1
             x = self.output_proj(x)      # (batch, 16, 1)
             return x.squeeze(-1)         # (batch, 16)
 
-    model = TransformerAutoencoder(seq_len=imputed.shape[1])
+    model = Transformer(seq_len=imputed.shape[1])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     loss_fn = nn.MSELoss()
@@ -1549,7 +1635,7 @@ def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1
     # 4. Training
     # ------------------------------------------------------------
 
-    print("Training Transformer Autoencoder...")
+    print("Training Transformer...")
 
     for epoch in range(epochs):
         epoch_loss = 0
@@ -1620,6 +1706,599 @@ def transformer(history, op_sales_masked, outside_slice, epochs=20, batch_size=1
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_transformer'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+def transformer_old2(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):
+
+    print("\n=== Transformer Recovery ===")
+    start_total = time.time()
+
+    torch.manual_seed(random_state)
+    np.random.seed(random_state)
+
+    imputed = op_sales_masked.copy()
+    imputed_count = int(np.isnan(imputed).sum())
+    seq_len = imputed.shape[1]
+
+    # ------------------------------------------------------------
+    # 1. Trainingsdaten: nur vollständig sichtbare Profile
+    # ------------------------------------------------------------
+
+    clean_mask = ~np.isnan(imputed).any(axis=1)   # rows with NO missing values
+    clean_profiles = imputed[clean_mask]            # shape: (n_clean, seq_len)
+
+    print(f"Clean training profiles: {len(clean_profiles):,}")
+    print(f"Missing values to impute: {imputed_count:,}")
+
+    if len(clean_profiles) == 0:
+        raise ValueError("No fully clean profiles found — cannot train.")
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    X_train, X_val = train_test_split(clean_profiles, test_size=0.1, random_state=random_state)
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)   # fit only on train split
+    X_val_scaled   = scaler.transform(X_val)
+
+    hour_mean_scaled = np.zeros(seq_len)             # mean in scaled space = 0 by definition
+
+    # ------------------------------------------------------------
+    # 3. Masked Autoencoding Dataset
+    #    Input:  clean profile with ~30 % positions zeroed out (= scaled mean)
+    #    Target: original clean profile
+    #    → model learns to recover masked positions from context
+    # ------------------------------------------------------------
+
+    def make_corrupted(X_scaled, mask_ratio=0.3):
+        corrupted = X_scaled.copy()
+        mask = np.random.rand(*corrupted.shape) < mask_ratio   # True = position is masked
+        corrupted[mask] = 0.0                                  # 0 = scaled mean
+        return corrupted.astype(np.float32), mask.astype(np.float32)
+
+    X_train_corrupted, train_masks = make_corrupted(X_train_scaled)
+    X_val_corrupted,   val_masks   = make_corrupted(X_val_scaled)
+
+    train_dataset = TensorDataset(
+        torch.tensor(X_train_corrupted),
+        torch.tensor(X_train_scaled.astype(np.float32)),
+        torch.tensor(train_masks),
+    )
+    val_dataset = TensorDataset(
+        torch.tensor(X_val_corrupted),
+        torch.tensor(X_val_scaled.astype(np.float32)),
+        torch.tensor(val_masks),
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False)
+
+    # ------------------------------------------------------------
+    # 4. Transformer
+    # ------------------------------------------------------------
+
+    class Transformer(nn.Module):
+        def __init__(self, seq_len, d_model=64, nhead=4, num_layers=2, dropout=0.1):
+            super().__init__()
+            self.input_proj  = nn.Linear(1, d_model)
+            encoder_layer    = nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=128, dropout=dropout,
+                batch_first=True
+            )
+            self.encoder     = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+            self.output_proj = nn.Linear(d_model, 1)
+
+        def forward(self, x):
+            # x: (batch, seq_len)
+            x = x.unsqueeze(-1)       # (batch, seq_len, 1)
+            x = self.input_proj(x)    # (batch, seq_len, d_model)
+            x = self.encoder(x)       # (batch, seq_len, d_model)
+            x = self.output_proj(x)   # (batch, seq_len, 1)
+            return x.squeeze(-1)      # (batch, seq_len)
+
+    model     = Transformer(seq_len=seq_len)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+    loss_fn   = nn.MSELoss(reduction="none")   # element-wise so we can mask
+
+    # ------------------------------------------------------------
+    # 5. Training  (loss only on corrupted positions)
+    # ------------------------------------------------------------
+
+    print("Training Transformer...")
+
+    best_val_loss = float("inf")
+    best_state    = None
+
+    for epoch in range(epochs):
+
+        # --- train ---
+        model.train()
+        train_loss = 0.0
+        for xb, yb, mb in train_loader:
+            optimizer.zero_grad()
+            pred        = model(xb)                        # (batch, seq_len)
+            elem_loss   = loss_fn(pred, yb)                # (batch, seq_len)
+            masked_loss = (elem_loss * mb).sum() / mb.sum().clamp(min=1)
+            masked_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            train_loss += masked_loss.item()
+
+        train_loss /= len(train_loader)
+
+        # --- validate ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for xb, yb, mb in val_loader:
+                pred        = model(xb)
+                elem_loss   = loss_fn(pred, yb)
+                masked_loss = (elem_loss * mb).sum() / mb.sum().clamp(min=1)
+                val_loss   += masked_loss.item()
+
+        val_loss /= len(val_loader)
+        scheduler.step(val_loss)
+
+        print(f"Epoch {epoch + 1:>3}/{epochs}  train={train_loss:.6f}  val={val_loss:.6f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state    = {k: v.clone() for k, v in model.state_dict().items()}
+
+    # restore best checkpoint
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"Restored best model (val_loss={best_val_loss:.6f})")
+
+    # ------------------------------------------------------------
+    # 6. Fehlende Stunden rekonstruieren
+    # ------------------------------------------------------------
+
+    print("Imputing missing values...")
+    model.eval()
+
+    for start in range(0, len(imputed), batch_size):
+        end   = min(start + batch_size, len(imputed))
+        batch = imputed[start:end].copy()
+
+        missing_mask = np.isnan(batch)
+
+        if not missing_mask.any():
+            continue
+
+        # fill NaNs with per-hour mean before scaling
+        batch_filled = np.where(missing_mask, scaler.mean_, batch)
+        batch_scaled = scaler.transform(batch_filled).astype(np.float32)
+
+        xb = torch.tensor(batch_scaled)
+
+        with torch.no_grad():
+            reconstructed_scaled = model(xb).numpy()
+
+        reconstructed = scaler.inverse_transform(reconstructed_scaled)
+
+        # write back ONLY the originally missing positions
+        batch[missing_mask] = reconstructed[missing_mask]
+        imputed[start:end]  = batch
+
+    # ------------------------------------------------------------
+    # 7. Rebuild corrected daily target
+    # ------------------------------------------------------------
+
+    imputed          = np.maximum(imputed, 0)
+    recovered_sum    = np.nansum(imputed, axis=1)
+    recovered_daily  = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_transformer"] = recovered_daily
+
+    print("\n=== Transformer Recovery Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Epochs used: {epochs}")
+    print(f"Mean raw sale_amount:    {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:    {history['recovered_daily_sales_transformer'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_size=512, random_state=42):
+    """
+    Denoising Transformer for hourly sales imputation.
+
+    op_sales_masked : np.ndarray, shape (n_days, n_hours)
+                      Hourly sales profiles; NaN = censored hour.
+    outside_slice   : np.ndarray, shape (n_days,)
+                      Sales recorded outside the tracked hour window.
+    history         : pd.DataFrame
+                      Full dataset; result written to 'recovered_daily_sales_transformer'.
+
+    Approach — BERT-style masked prediction:
+      1. Train only on fully observed profiles.
+      2. During training: randomly mask ~30 % of hours (replace with learned [MASK] token).
+         Loss computed only on masked positions → model learns to infer missing hours
+         from the surrounding hourly context.
+      3. At inference: replace NaN positions with [MASK], reconstruct, write back only
+         the originally missing positions.
+    """
+
+    print("\n=== Transformer Recovery ===")
+    start_total = time.time()
+
+    torch.manual_seed(random_state)
+    np.random.seed(random_state)
+
+    n_days, n_hours = op_sales_masked.shape
+
+    # ------------------------------------------------------------------ #
+    # 1.  Collect fully observed profiles for training                    #
+    # ------------------------------------------------------------------ #
+
+    fully_observed = ~np.isnan(op_sales_masked).any(axis=1)
+    clean = op_sales_masked[fully_observed].astype(np.float32)   # (n_clean, n_hours)
+
+    print(f"Fully observed profiles : {len(clean):,} / {n_days:,}")
+    print(f"Missing hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
+
+    if len(clean) == 0:
+        raise ValueError("No fully observed profiles — cannot train.")
+
+    # ------------------------------------------------------------------ #
+    # 2.  Scale (fit on clean profiles)                                   #
+    # ------------------------------------------------------------------ #
+
+    scaler = StandardScaler()
+    clean_scaled = scaler.fit_transform(clean).astype(np.float32)   # (n_clean, n_hours)
+
+    # ------------------------------------------------------------------ #
+    # 3.  Model                                                           #
+    # ------------------------------------------------------------------ #
+
+    class HourlySalesTransformer(nn.Module):
+        """
+        BERT-style Transformer for hourly profile imputation.
+
+        Each hour is treated as one token.  A learnable [MASK] embedding
+        replaces censored positions.  Positional encodings give the model
+        awareness of time-of-day structure.
+        """
+
+        def __init__(self, n_hours, d_model=64, nhead=4, num_layers=3, dropout=0.1):
+            super().__init__()
+
+            self.n_hours = n_hours
+            self.d_model = d_model
+
+            # project scalar sales value → d_model
+            self.value_proj = nn.Linear(1, d_model)
+
+            # learnable mask token (replaces censored hours)
+            self.mask_token = nn.Parameter(torch.zeros(d_model))
+
+            # learnable positional encoding (one per hour)
+            self.pos_emb = nn.Embedding(n_hours, d_model)
+
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=d_model * 4,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,        # Pre-LN: more stable training
+            )
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=num_layers,
+                enable_nested_tensor=False,
+            )
+
+            self.head = nn.Sequential(
+                nn.LayerNorm(d_model),
+                nn.Linear(d_model, d_model // 2),
+                nn.GELU(),
+                nn.Linear(d_model // 2, 1),
+            )
+
+        def forward(self, x, mask):
+            """
+            x    : (batch, n_hours)   — scaled sales values; arbitrary at masked positions
+            mask : (batch, n_hours)   — 1.0 = position is masked (to be predicted)
+            """
+            batch = x.size(0)
+            pos   = torch.arange(self.n_hours, device=x.device)   # (n_hours,)
+
+            # project observed values
+            tokens = self.value_proj(x.unsqueeze(-1))              # (batch, n_hours, d_model)
+
+            # replace masked positions with learned mask token
+            mask_expanded = mask.unsqueeze(-1).bool()              # (batch, n_hours, 1)
+            mask_tok       = self.mask_token.view(1, 1, -1).expand(batch, self.n_hours, -1)
+            tokens         = torch.where(mask_expanded, mask_tok, tokens)
+
+            # add positional encoding
+            tokens = tokens + self.pos_emb(pos).unsqueeze(0)       # (batch, n_hours, d_model)
+
+            # transformer
+            out = self.encoder(tokens)                             # (batch, n_hours, d_model)
+
+            # project to scalar
+            return self.head(out).squeeze(-1)                      # (batch, n_hours)
+
+    model = HourlySalesTransformer(n_hours=n_hours).to("cpu")
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model parameters        : {total_params:,}")
+
+    # ------------------------------------------------------------------ #
+    # 4.  Training                                                        #
+    # ------------------------------------------------------------------ #
+
+    X_train, X_val = train_test_split(clean_scaled, test_size=0.1, random_state=random_state)
+
+    X_train_t = torch.tensor(X_train)
+    X_val_t   = torch.tensor(X_val)
+
+    train_ds = TensorDataset(X_train_t)
+    val_ds   = TensorDataset(X_val_t)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  drop_last=False)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, drop_last=False)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+
+    MASK_RATIO = 0.30
+
+    def masked_loss(pred, target, mask):
+        """MSE only on masked positions."""
+        err = (pred - target) ** 2
+        denom = mask.sum().clamp(min=1)
+        return (err * mask).sum() / denom
+
+    best_val  = float("inf")
+    best_state = None
+
+    print(f"\nTraining for up to {epochs} epochs  (mask ratio={MASK_RATIO:.0%})")
+    print(f"{'Epoch':>6}  {'Train':>10}  {'Val':>10}  {'LR':>10}")
+    print("-" * 42)
+
+    for epoch in range(1, epochs + 1):
+
+        # --- train ---
+        model.train()
+        tr_loss = 0.0
+        for (xb,) in train_loader:
+            rand_mask = (torch.rand_like(xb) < MASK_RATIO).float()
+            optimizer.zero_grad()
+            pred = model(xb, rand_mask)
+            loss = masked_loss(pred, xb, rand_mask)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            tr_loss += loss.item()
+        tr_loss /= len(train_loader)
+
+        # --- validate ---
+        model.eval()
+        vl_loss = 0.0
+        with torch.no_grad():
+            for (xb,) in val_loader:
+                rand_mask = (torch.rand_like(xb) < MASK_RATIO).float()
+                pred      = model(xb, rand_mask)
+                vl_loss  += masked_loss(pred, xb, rand_mask).item()
+        vl_loss /= len(val_loader)
+
+        scheduler.step(vl_loss)
+        lr = optimizer.param_groups[0]["lr"]
+
+        print(f"{epoch:>6}  {tr_loss:>10.6f}  {vl_loss:>10.6f}  {lr:>10.2e}")
+
+        if vl_loss < best_val:
+            best_val   = vl_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+    model.load_state_dict(best_state)
+    print(f"\nRestored best checkpoint  (val={best_val:.6f})")
+
+    # ------------------------------------------------------------------ #
+    # 5.  Imputation                                                      #
+    # ------------------------------------------------------------------ #
+
+    print("Imputing missing values...")
+    model.eval()
+
+    imputed = op_sales_masked.copy().astype(np.float64)
+
+    for start in range(0, n_days, batch_size):
+        end   = min(start + batch_size, n_days)
+        batch = imputed[start:end]                          # (b, n_hours)
+
+        nan_mask = np.isnan(batch)
+        if not nan_mask.any():
+            continue
+
+        # fill NaN positions with per-hour mean before scaling
+        batch_filled = np.where(nan_mask, scaler.mean_, batch).astype(np.float32)
+        batch_scaled = scaler.transform(batch_filled).astype(np.float32)
+
+        xb   = torch.tensor(batch_scaled)
+        mb   = torch.tensor(nan_mask.astype(np.float32))   # 1 = was NaN → predict this
+
+        with torch.no_grad():
+            recon_scaled = model(xb, mb).numpy()            # (b, n_hours)
+
+        recon = scaler.inverse_transform(recon_scaled)
+
+        # write back only originally missing positions
+        batch[nan_mask] = recon[nan_mask]
+        imputed[start:end] = batch
+
+    # ------------------------------------------------------------------ #
+    # 6.  Rebuild daily totals                                            #
+    # ------------------------------------------------------------------ #
+
+    imputed = np.maximum(imputed, 0)                        # no negative sales
+    recovered_daily = outside_slice + imputed.sum(axis=1)
+
+    history["recovered_daily_sales_transformer"] = recovered_daily
+
+    print("\n=== Transformer Recovery Finished ===")
+    print(f"Imputed hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
+    print(f"Mean raw sale_amount    : {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales    : {history['recovered_daily_sales_transformer'].mean():.4f}")
+    print(f"Total runtime           : {time.time() - start_total:.2f}s")
+
+def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4, batch_size=256, device=None):
+    """
+    Imputes censored (NaN) hourly cells in op_sales_masked using an
+    encoder-only Transformer trained only on observed (non-NaN) hours.
+
+    Mirrors the signature of global_mean():
+      - history         : DataFrame with covariates + sale_amount
+      - op_sales_masked : (N, 16) float32 array, NaN where stockout
+      - outside_slice   : (N,)    float32 array, sales outside h06-h21
+
+    Writes history["recovered_daily_sales_transformer"] and returns imputed.
+    """
+    import torch, torch.nn as nn
+    from torch.utils.data import TensorDataset, DataLoader
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    N, H = op_sales_masked.shape   # (N_rows, 16 hours)
+
+    # ── 1. Build covariates matrix  (N, H, C) ────────────────────────────────
+    # Broadcast daily scalars to every hour slot so each token is self-contained
+    hour_idx   = np.tile(np.arange(H), (N, 1)).astype(np.float32) / (H - 1)  # (N,16) normalised 0-1
+    discount   = np.repeat(history["discount"].values[:, None],          H, axis=1).astype(np.float32)
+    holiday    = np.repeat(history["holiday_flag"].values[:, None],      H, axis=1).astype(np.float32)
+    activity   = np.repeat(history["activity_flag"].values[:, None],     H, axis=1).astype(np.float32)
+    temperature= np.repeat(history["avg_temperature"].values[:, None],   H, axis=1).astype(np.float32)
+    humidity   = np.repeat(history["avg_humidity"].values[:, None],      H, axis=1).astype(np.float32)
+    precpt     = np.repeat(history["precpt"].values[:, None],            H, axis=1).astype(np.float32)
+
+    # Normalise continuous covariates
+    def norm(x):
+        mu, sigma = x.mean(), x.std() + 1e-8
+        return (x - mu) / sigma
+
+    covariates = np.stack([
+        hour_idx,
+        norm(discount),
+        holiday,
+        activity,
+        norm(temperature),
+        norm(humidity),
+        norm(precpt),
+    ], axis=-1)                                      # (N, 16, 7)
+    C = covariates.shape[-1]
+
+    # ── 2. Normalise sales on observed hours only ─────────────────────────────
+    observed_vals = op_sales_masked[~np.isnan(op_sales_masked)]
+    sale_mean = observed_vals.mean()
+    sale_std  = observed_vals.std() + 1e-8
+
+    sales_norm = (op_sales_masked - sale_mean) / sale_std    # NaN preserved
+    obs_mask   = ~np.isnan(sales_norm)                       # True = observed
+
+    # Replace NaN with 0 for tensor input (model sees mask, not NaN)
+    sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
+
+    # ── 3. Tensors ────────────────────────────────────────────────────────────
+    T_sales = torch.tensor(sales_input,    dtype=torch.float32)   # (N, H)
+    T_cov   = torch.tensor(covariates,     dtype=torch.float32)   # (N, H, C)
+    T_obs   = torch.tensor(obs_mask,       dtype=torch.bool)      # (N, H)
+    T_tgt   = torch.tensor(sales_norm.copy().astype(np.float32))  # (N, H)  NaN in stockout
+
+    dataset = TensorDataset(T_sales, T_cov, T_obs, T_tgt)
+    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # ── 4. Model ──────────────────────────────────────────────────────────────
+    class HourlyTransformer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.input_proj = nn.Linear(1 + C, d_model)   # sale + covariates → d_model
+
+            # Fixed sinusoidal positional encoding
+            pe = torch.zeros(H, d_model)
+            pos = torch.arange(H).unsqueeze(1).float()
+            div = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+            pe[:, 0::2] = torch.sin(pos * div)
+            pe[:, 1::2] = torch.cos(pos * div)
+            self.register_buffer("pe", pe.unsqueeze(0))   # (1, H, d_model)
+
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=n_heads, dim_feedforward=d_ff,
+                dropout=0.1, batch_first=True, activation="gelu"
+            )
+            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+            self.head = nn.Linear(d_model, 1)
+
+        def forward(self, sale, cov):
+            # sale: (B, H)   cov: (B, H, C)
+            x = torch.cat([sale.unsqueeze(-1), cov], dim=-1)  # (B, H, 1+C)
+            x = self.input_proj(x) + self.pe                  # (B, H, d_model)
+            x = self.encoder(x)                               # (B, H, d_model)
+            return self.head(x).squeeze(-1)                   # (B, H)
+
+    model = HourlyTransformer().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # ── 5. Train ──────────────────────────────────────────────────────────────
+    print(f"Training transformer on {device}  |  params: {sum(p.numel() for p in model.parameters()):,}")
+    for epoch in range(1, epochs + 1):
+        model.train()
+        epoch_loss, epoch_tokens = 0.0, 0
+        for sale, cov, obs, tgt in loader:
+            sale, cov, obs, tgt = sale.to(device), cov.to(device), obs.to(device), tgt.to(device)
+            pred = model(sale, cov)             # (B, H)
+
+            # ── Censored loss: only backprop through observed hours ──────────
+            if obs.sum() == 0:
+                continue
+            loss = nn.functional.huber_loss(pred[obs], tgt[obs], delta=1.0)
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            epoch_loss   += loss.item() * obs.sum().item()
+            epoch_tokens += obs.sum().item()
+
+        scheduler.step()
+        if epoch % 5 == 0 or epoch == 1:
+            print(f"  Epoch {epoch:02d}/{epochs}  loss={epoch_loss/max(epoch_tokens,1):.5f}")
+
+    # ── 6. Inference: fill NaN cells ─────────────────────────────────────────
+    model.eval()
+    all_preds = []
+    inf_loader = DataLoader(TensorDataset(T_sales, T_cov), batch_size=batch_size, shuffle=False)
+    with torch.no_grad():
+        for sale, cov in inf_loader:
+            pred = model(sale.to(device), cov.to(device))
+            all_preds.append(pred.cpu().numpy())
+
+    preds_norm = np.concatenate(all_preds, axis=0)                    # (N, H)
+    preds_denorm = (preds_norm * sale_std + sale_mean).clip(0)        # (N, H)
+
+    # Only replace NaN (censored) cells; keep observed sales unchanged
+    imputed = op_sales_masked.copy()
+    nan_mask = np.isnan(imputed)
+    imputed_count = nan_mask.sum()
+    imputed[nan_mask] = preds_denorm[nan_mask]
+
+    # ── 7. Rebuild daily totals (same as global_mean) ─────────────────────────
+    recovered_sum   = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+    history["recovered_daily_sales_transformer"] = recovered_daily
+
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount:     {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales:     {history['recovered_daily_sales_transformer'].mean():.4f}")
+
 
 def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # TODO Diffusion-like Recovery - Laura
 
