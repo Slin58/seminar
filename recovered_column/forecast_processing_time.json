@@ -1,1 +1,7 @@
-{"global_mean_forecast": 6.927451, "seasonal_naive_forecast": 13.201457, "rolling_28d_forecast": 76.786378, "simple_exponential_smoothing": 141.298216}
+{
+    "global_mean_forecast": 6.927451,
+    "seasonal_naive_forecast": 13.201457,
+    "rolling_28d_forecast": 76.786378,
+    "simple_exponential_smoothing": 141.298216,
+    "lightgbm_forecast": 1857.315952
+}
