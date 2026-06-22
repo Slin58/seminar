@@ -4,6 +4,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from statsmodels.tsa.arima.model import ARIMA
+
 # TODO: Forecast Methoden:
 
 # - random_forest (xgboost)
@@ -260,3 +262,226 @@ def exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
+
+
+def arima(train_df, val_df, target_col, order=(1, 1, 1)):
+    """
+    ARIMA Forecast pro series_id.
+
+    Für jede series_id wird ein ARIMA-Modell auf den Trainingsdaten
+    gefittet und für die Validierungstage vorhergesagt.
+
+    ARIMA(p,d,q):
+    - p: Anzahl vergangener Werte
+    - d: Anzahl Differenzierungen gegen Trend
+    - q: Anzahl vergangener Fehlerterme
+
+    Fallback-Kette:
+    1. ARIMA(order)
+    2. Seasonal Naive / letzter Wert der Vorwoche, falls möglich
+    3. series_id Durchschnitt
+    4. globaler Durchschnitt
+    """
+
+    val_pred = val_df.copy()
+
+    global_fallback = train_df[target_col].mean()
+    series_fallback = train_df.groupby("series_id")[target_col].mean()
+
+    predictions = {}
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+
+        train_group = train_df[
+            train_df["series_id"] == series_id
+        ].sort_values("day_idx")
+
+        val_days = val_group["day_idx"].sort_values().values
+
+        if train_group.empty:
+            fb = global_fallback
+            for day_idx in val_days:
+                predictions[(series_id, day_idx)] = fb
+            continue
+
+        y = train_group[target_col].astype(float).values
+        n = len(y)
+
+        train_max_day = train_group["day_idx"].max()
+
+        max_horizon = int(val_days.max() - train_max_day)
+        max_horizon = max(max_horizon, 1)
+
+        forecast = None
+
+        # ARIMA braucht genug Werte
+        if n >= 10:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+
+                    model = ARIMA(
+                        y,
+                        order=order
+                    )
+
+                    fitted = model.fit()
+
+                    forecast = fitted.forecast(steps=max_horizon)
+
+            except Exception:
+                forecast = None
+
+        # Fallback 1: letzter verfügbarer Wert
+        if forecast is None:
+            if n > 0:
+                last_value = y[-1]
+                forecast = np.full(max_horizon, last_value)
+            else:
+                fb = series_fallback.get(series_id, global_fallback)
+                forecast = np.full(max_horizon, fb)
+
+        for day_idx in val_days:
+            step = int(day_idx - train_max_day) - 1
+
+            if 0 <= step < len(forecast):
+                pred_value = forecast[step]
+            else:
+                pred_value = series_fallback.get(series_id, global_fallback)
+
+            predictions[(series_id, day_idx)] = pred_value
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda row: predictions.get(
+            (row["series_id"], row["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+
+def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
+    """
+    LightGBM Forecast.
+
+    Trainiert ein globales Modell über alle series_id hinweg.
+    Zielvariable ist target_col, z. B.:
+    - sale_amount
+    - recovered_daily_sales_xgboost
+    - recovered_daily_sales_hourly_mean
+
+    Das Modell nutzt Zeit-, Serien- und Kontextfeatures.
+    """
+
+    import lightgbm as lgb
+    import numpy as np
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    # ------------------------------------------------------------
+    # 1. Features erstellen
+    # ------------------------------------------------------------
+
+    def add_lgbm_features(df):
+        df = df.copy()
+
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["month"] = pd.to_datetime(df["dt"]).dt.month
+
+        # Lag-/Rolling-Features aus sale_amount bzw. vorhandenen Features
+        # Falls target_col schon eigene Recovery-Spalte ist, werden Features
+        # trotzdem aus dieser Zielspalte gebaut.
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+        df["rolling7"] = grp.shift(1).rolling(7, min_periods=1).mean().reset_index(level=0, drop=True)
+        df["rolling28"] = grp.shift(1).rolling(28, min_periods=1).mean().reset_index(level=0, drop=True)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0).sort_values(["series_id", "day_idx"])
+
+    combined = add_lgbm_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    # ------------------------------------------------------------
+    # 2. Feature-Liste
+    # ------------------------------------------------------------
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "lag1",
+        "lag7",
+        "rolling7",
+        "rolling28",
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    # ------------------------------------------------------------
+    # 3. Missing Values behandeln
+    # ------------------------------------------------------------
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # ------------------------------------------------------------
+    # 4. Modell trainieren
+    # ------------------------------------------------------------
+
+    model = lgb.LGBMRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        num_leaves=64,
+        max_depth=-1,
+        min_child_samples=50,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="regression",
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    model.fit(X_train, y_train)
+
+    # ------------------------------------------------------------
+    # 5. Forecast
+    # ------------------------------------------------------------
+
+    val_feat["prediction"] = model.predict(X_val)
+
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat

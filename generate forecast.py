@@ -44,8 +44,10 @@ forecast_models = {
     "global_mean_forecast": forecast.global_mean,
     "seasonal_naive_forecast": forecast.seasonal_naive,
     "rolling_28d_forecast": forecast.rolling_28d,
-    "simple_exponential_smoothing": forecast.simple_exponential_smoothing
+    "simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
+    #"arima_forecast": forecast.arima,
+    "lightgbm_forecast": forecast.lightgbm_forecast,
 }
 
 # ------------------------------------------------------------
@@ -61,25 +63,60 @@ for forecast_name, forecast_func in forecast_models.items():
     processing_time = datetime.now() - datetime.now()
     counter = 0
 
+    # for col in history.columns:
+    #     if col.startswith("recovered_daily_sales_") or col == "sale_amount":
+    #             current_time = datetime.now()
+
+    #             val_pred = forecast_func(
+    #                 train_df=train_r,
+    #                 val_df=val_r,
+    #                 target_col=col
+    #             )
+        
+    #             name = col.replace("recovered_daily_sales_", "")
+    #             if name == "sale_amount":
+    #                 name = "raw_sales"
+
+    #             result_name = f"{name} + {forecast_name}"
+    #             all_results[result_name] = utils.evaluate_forecast(val_pred)
+                
+    #             processing_time += datetime.now()-current_time
+    #             counter += 1
+
     for col in history.columns:
         if col.startswith("recovered_daily_sales_") or col == "sale_amount":
-                current_time = datetime.now()
 
-                val_pred = forecast_func(
-                    train_df=train_r,
-                    val_df=val_r,
-                    target_col=col
-                )
-        
-                name = col.replace("recovered_daily_sales_", "")
-                if name == "sale_amount":
-                    name = "raw_sales"
+            name = col.replace("recovered_daily_sales_", "")
+            if name == "sale_amount":
+                name = "raw_sales"
 
-                result_name = f"{name} + {forecast_name}"
-                all_results[result_name] = utils.evaluate_forecast(val_pred)
-                
-                processing_time += datetime.now()-current_time
-                counter += 1
+            result_name = f"{name} + {forecast_name}"
+
+            # Bereits vorhanden -> überspringen
+            if result_name in all_results:
+                print(f"Skip: {result_name}")
+                continue
+
+            print(f"Run: {result_name}")
+
+            current_time = datetime.now()
+
+            val_pred = forecast_func(
+                train_df=train_r,
+                val_df=val_r,
+                target_col=col
+            )
+
+            all_results[result_name] = utils.evaluate_forecast(val_pred)
+
+            processing_time += datetime.now() - current_time
+            counter += 1
+
+            print(
+                f"Finished: {result_name} "
+                f"({datetime.now() - current_time})"
+            )
+
 
     with open("recovered_column/forecast_processing_time.json", "r") as f:
         content = f.read()
