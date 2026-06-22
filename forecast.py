@@ -19,7 +19,7 @@ from statsmodels.tsa.arima.model import ARIMA
 # - simple tripple exponential smoothing
 
 # Laura: 
-# - arima
+# - arima (lädt über eine Stunde nur für raw_sales)
 # - sarima
 
 def global_mean(train_df, val_df, target_col):
@@ -104,6 +104,7 @@ def rolling_28d(train_df, val_df, target_col):
 
     return val_pred
 
+#TODO single and double exponential smoothing (alpha, beta, gamma einstellen) und holt-winters nochmal optimieren bzw. Chati fragen warum er solange laden
 def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3):
     """
     Simple Exponential Smoothing (SES).
@@ -263,7 +264,135 @@ def exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
 
     return val_pred
 
+def holt_winters_exp_forecast(train_df, val_df, target_col, seasonal_periods=7):
+    """
+    Holt-Winters Forecast pro series_id.
 
+    Modelliert:
+    - Level
+    - Trend
+    - saisonales Muster, z. B. Wochenmuster mit seasonal_periods=7
+
+    Bei Fehlern oder zu wenigen Daten wird auf einfachere Methoden zurückgefallen.
+    """
+
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    import warnings
+    import numpy as np
+
+    val_pred = val_df.copy()
+
+    global_fallback = train_df[target_col].mean()
+    series_fallback = train_df.groupby("series_id")[target_col].mean()
+
+    predictions = {}
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+
+        train_group = train_df[
+            train_df["series_id"] == series_id
+        ].sort_values("day_idx")
+
+        val_days = val_group["day_idx"].sort_values().values
+
+        if train_group.empty:
+            for day_idx in val_days:
+                predictions[(series_id, day_idx)] = global_fallback
+            continue
+
+        y = train_group[target_col].astype(float).values
+        n = len(y)
+
+        train_max_day = train_group["day_idx"].max()
+        max_horizon = int(val_days.max() - train_max_day)
+        max_horizon = max(max_horizon, 1)
+
+        forecast = None
+
+        # Holt-Winters: Trend + Saisonalität
+        if n >= 2 * seasonal_periods:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+
+                    model = ExponentialSmoothing(
+                        y,
+                        trend="add",
+                        damped_trend=True,
+                        seasonal="add",
+                        seasonal_periods=seasonal_periods,
+                        initialization_method="estimated"
+                    ).fit()
+
+                forecast = model.forecast(max_horizon)
+
+            except Exception:
+                forecast = None
+
+        # Fallback 1: Holt ohne Saisonalität
+        if forecast is None and n >= 2:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+
+                    model = ExponentialSmoothing(
+                        y,
+                        trend="add",
+                        damped_trend=True,
+                        seasonal=None,
+                        initialization_method="estimated"
+                    ).fit()
+
+                forecast = model.forecast(max_horizon)
+
+            except Exception:
+                forecast = None
+
+        # Fallback 2: SES
+        if forecast is None and n >= 1:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+
+                    model = ExponentialSmoothing(
+                        y,
+                        trend=None,
+                        seasonal=None,
+                        initialization_method="estimated"
+                    ).fit()
+
+                forecast = model.forecast(max_horizon)
+
+            except Exception:
+                forecast = None
+
+        # Fallback 3: series/global mean
+        if forecast is None:
+            fb = series_fallback.get(series_id, global_fallback)
+            forecast = np.full(max_horizon, fb)
+
+        for day_idx in val_days:
+            step = int(day_idx - train_max_day) - 1
+
+            if 0 <= step < len(forecast):
+                pred_value = forecast[step]
+            else:
+                pred_value = series_fallback.get(series_id, global_fallback)
+
+            predictions[(series_id, day_idx)] = pred_value
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda row: predictions.get(
+            (row["series_id"], row["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
 def arima(train_df, val_df, target_col, order=(1, 1, 1)):
     """
     ARIMA Forecast pro series_id.
@@ -485,3 +614,144 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
     val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
 
     return val_feat
+
+def xgboost_forecast(train_df, val_df, target_col, random_state=42):
+    """
+    XGBoost Forecast.
+
+    Globales Modell über alle series_id.
+    Forecast der nächsten Tage auf Basis von
+    Zeit-, Produkt-, Store- und Wetterfeatures.
+    """
+
+    import xgboost as xgb
+    import numpy as np
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    # ------------------------------------------------------------
+    # 1. Features erstellen
+    # ------------------------------------------------------------
+
+    def add_xgb_features(df):
+        df = df.copy()
+
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["month"] = pd.to_datetime(df["dt"]).dt.month
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+
+    combined = add_xgb_features(combined)
+
+    train_feat = combined[
+        combined["day_idx"].isin(train["day_idx"])
+    ].copy()
+
+    val_feat = combined[
+        combined["day_idx"].isin(val_pred["day_idx"])
+    ].copy()
+
+    # ------------------------------------------------------------
+    # 2. Features auswählen
+    # ------------------------------------------------------------
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "lag1",
+        "lag7",
+        "rolling7",
+        "rolling28",
+        "psd",
+    ]
+
+    feature_cols = [
+        c for c in feature_cols
+        if c in train_feat.columns
+    ]
+
+    # ------------------------------------------------------------
+    # 3. Daten vorbereiten
+    # ------------------------------------------------------------
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # ------------------------------------------------------------
+    # 4. Modell trainieren
+    # ------------------------------------------------------------
+
+    model = xgb.XGBRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=8,
+        min_child_weight=10,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="reg:squarederror",
+        tree_method="hist",
+        n_jobs=-1,
+        random_state=random_state,
+    )
+
+    model.fit(X_train, y_train)
+
+    # ------------------------------------------------------------
+    # 5. Forecast
+    # ------------------------------------------------------------
+
+    val_feat["prediction"] = model.predict(X_val)
+
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+# TODO 
+# Exponential Smoothing (Siehe oben) (Nils)
+# DLinear (Nils)
+# Transformer (Achtung sehr lange Ladezeit evtl. einfach LSTM verwenden) (Laura)
+# CNN (Laura)
+# Random Forest (Laura)

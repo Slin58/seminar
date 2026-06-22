@@ -335,46 +335,46 @@ def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare In
     )
 
 
-#  def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # TODO Spline-Interpolation - Laura
+def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation  Laura
 
-#     imputed = op_sales_masked.copy()
+    imputed = op_sales_masked.copy()
 
-#     imputed_count = np.isnan(imputed).sum()
-#     n_hours = imputed.shape[1]
+    imputed_count = np.isnan(imputed).sum()
+    n_hours = imputed.shape[1]
 
-#     for h in range(n_hours):
+    for h in range(n_hours):
 
-#         s = pd.Series(imputed[:, h])
+        s = pd.Series(imputed[:, h])
 
-#         # Spline braucht genug bekannte Werte
-#         if s.notna().sum() > order:
-#             interpolated = s.interpolate(
-#                 method="spline",
-#                 order=order,
-#                 limit_direction="both"
-#             )
-#         else:
-#             interpolated = s.copy()
+        # Spline braucht genug bekannte Werte
+        if s.notna().sum() > order:
+            interpolated = s.interpolate(
+                method="spline",
+                order=order,
+                limit_direction="both"
+            )
+        else:
+            interpolated = s.copy()
 
-#         # Fallback für übrige NaNs
-#         fallback = s.mean()
-#         interpolated = interpolated.fillna(fallback)
+        # Fallback für übrige NaNs
+        fallback = s.mean()
+        interpolated = interpolated.fillna(fallback)
 
-#         imputed[:, h] = interpolated.values
+        imputed[:, h] = interpolated.values
 
-#     imputed = np.maximum(imputed, 0)
+    imputed = np.maximum(imputed, 0)
 
-#     recovered_sum = np.nansum(imputed, axis=1)
-#     recovered_daily = outside_slice + recovered_sum
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
 
-#     history["recovered_daily_sales_interpolation_spline"] = recovered_daily
+    history["recovered_daily_sales_interpolation_spline"] = recovered_daily
 
-#     print(f"Imputed {imputed_count:,} hourly cells")
-#     print(f"Spline order used: {order}")
-#     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-#     print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Spline order used: {order}")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
 
-def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3):
+def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
@@ -1652,63 +1652,6 @@ def inventory_aware_model(history): # inventory aware model is a forecasting met
 
 # Deep Learning basierte Recovery-Methoden: - Nils 
 
-# TODO Nils autoencoder und transformer model.fit mit zweimal dem gleichen Input
-
-def autoencoder_old(history, op_sales_masked, outside_slice, epochs=50, latent_dim=8): # TODO
-    """
-    Autoencoder-based recovery using sklearn MLPRegressor (input == output).
-    - Missing hours are replaced by the reconstruction
-    - Observed hours are kept as-is
-    """
-    imputed = op_sales_masked.copy()
-
-    # ── 1. Prepare data ──────────────────────────────────────────────────────
-    clean_mask = ~np.isnan(imputed)
-    clean_profiles = imputed[clean_mask]
-
-    # ── 2. Normalize ─────────────────────────────────────────────────────────
-    scaler = StandardScaler()
-    clean_norm = scaler.fit_transform(clean_profiles)  # (n_clean, 16)
-
-    # ── 3. Train MLP as autoencoder (input == output) ────────────────────────
-    model = MLPRegressor(hidden_layer_sizes=(32, latent_dim, 32), activation="relu", max_iter=epochs, random_state=42, early_stopping=True, validation_fraction=0.1,)
-    model.fit(clean_norm, clean_norm)
-    print(f"Autoencoder trained on {len(clean_profiles):,} clean days")
-
-    # ── 4. Impute censored hours ──────────────────────────────────────────────
-    imputed = op_sales_masked.copy()
-    hour_mean = scaler.mean_  # per-hour mean from scaler, used as neutral fill
-
-    imputed_count = 0
-
-    for i in range(len(imputed)):
-        row = imputed[i]
-        missing = np.isnan(row)
-
-        if not missing.any():
-            continue
-
-        # Fill NaNs with hour mean before passing through AE
-        row_filled = np.where(missing, hour_mean, row)
-        row_norm   = scaler.transform(row_filled.reshape(1, -1))
-
-        recon      = model.predict(row_norm)                  # (1, 16)
-        recon      = scaler.inverse_transform(recon).squeeze(0)  # denormalize
-
-        # Only replace missing hours
-        imputed[i, missing] = np.maximum(0, recon[missing])
-        imputed_count += missing.sum()
-
-    # ── 5. Rebuild daily totals ───────────────────────────────────────────────
-    recovered_sum   = np.nansum(imputed, axis=1)
-    recovered_daily = recovered_sum + outside_slice
-
-    history["recovered_daily_sales_autoencoder"] = recovered_daily
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount:            {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales (autoenc):  {history['recovered_daily_sales_autoencoder'].mean():.4f}")
-
 def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
 
     # Architecture: input = [16 sales + 16 mask flags + 7 covariates] = 39-dim
@@ -2551,7 +2494,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     print(f"Mean recovered sales:     {history['recovered_daily_sales_transformer'].mean():.4f}")
 
 
-def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # TODO Diffusion-like Recovery - Laura
+def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
 
     print("\n=== Diffusion-like Recovery ===")
 
@@ -2617,3 +2560,7 @@ def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_
     print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {history['recovered_daily_sales_diffusion'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+
+# TODO 
+# DLinear (Nils)
