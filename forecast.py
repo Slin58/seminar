@@ -8,7 +8,17 @@ from statsmodels.tsa.arima.model import ARIMA
 
 # TODO: Forecast Methoden:
 
-# - random_forest (xgboost)
+# - random_forest Run: raw_sales + random_forest_forecast
+    # [Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 8 concurrent workers.
+    # [Parallel(n_jobs=-1)]: Done  34 tasks      | elapsed: 12.0min
+    # [Parallel(n_jobs=-1)]: Done 184 tasks      | elapsed: 54.1min
+    # [Parallel(n_jobs=-1)]: Done 200 out of 200 | elapsed: 58.4min finished
+    # [Parallel(n_jobs=8)]: Using backend ThreadingBackend with 8 concurrent workers.
+    # [Parallel(n_jobs=8)]: Done  34 tasks      | elapsed:    0.5s
+    # [Parallel(n_jobs=8)]: Done 184 tasks      | elapsed:    2.6s
+    # [Parallel(n_jobs=8)]: Done 200 out of 200 | elapsed:    2.8s finished
+    # Finished: raw_sales + random_forest_forecast (0:58:52.013636)
+# - xgboost
 # - lightgbm
 # - CNN
 # - RNN, LSTM oder Transformer
@@ -741,6 +751,143 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
 
     # ------------------------------------------------------------
     # 5. Forecast
+    # ------------------------------------------------------------
+
+    val_feat["prediction"] = model.predict(X_val)
+
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def random_forest_forecast(train_df, val_df, target_col, random_state=42):
+    """
+    Random Forest Forecast.
+
+    Globales Modell über alle series_id.
+    Nutzt Zeit-, Produkt-, Store- und Wetterfeatures.
+    """
+
+    from sklearn.ensemble import RandomForestRegressor
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    # ------------------------------------------------------------
+    # Features erstellen
+    # ------------------------------------------------------------
+
+    def add_features(df):
+        df = df.copy()
+
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["month"] = pd.to_datetime(df["dt"]).dt.month
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+
+    combined = add_features(combined)
+
+    train_feat = combined[
+        combined["day_idx"].isin(train["day_idx"])
+    ].copy()
+
+    val_feat = combined[
+        combined["day_idx"].isin(val_pred["day_idx"])
+    ].copy()
+
+    # ------------------------------------------------------------
+    # Features auswählen
+    # ------------------------------------------------------------
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "lag1",
+        "lag7",
+        "rolling7",
+        "rolling28",
+        "psd",
+    ]
+
+    feature_cols = [
+        c for c in feature_cols
+        if c in train_feat.columns
+    ]
+
+    # ------------------------------------------------------------
+    # Daten vorbereiten
+    # ------------------------------------------------------------
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # ------------------------------------------------------------
+    # Modell trainieren
+    # ------------------------------------------------------------
+
+    # model = RandomForestRegressor (eine runde ca 58 min)
+    #     n_estimators=200,
+    #     max_depth=15,
+    #     min_samples_leaf=20,
+    #     n_jobs=-1,
+    #     random_state=random_state,
+    #     verbose=1
+    # )
+    model = RandomForestRegressor(
+        n_estimators=50,          # statt 200
+        max_depth=12,             # statt 15
+        min_samples_leaf=50,      # statt 20
+        max_features="sqrt",
+        n_jobs=-1,
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    # ------------------------------------------------------------
+    # Forecast
     # ------------------------------------------------------------
 
     val_feat["prediction"] = model.predict(X_val)

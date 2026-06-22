@@ -45,12 +45,12 @@ forecast_models = {
     "seasonal_naive_forecast": forecast.seasonal_naive,
     "rolling_28d_forecast": forecast.rolling_28d,
     "simple_exponential_smoothing": forecast.simple_exponential_smoothing,
-    "holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
-
+    #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
     #"arima_forecast": forecast.arima,
     "lightgbm_forecast": forecast.lightgbm_forecast,
     "xgboost_forecast": forecast.xgboost_forecast,
+    "random_forest_forecast": forecast.random_forest_forecast,
 }
 
 # ------------------------------------------------------------
