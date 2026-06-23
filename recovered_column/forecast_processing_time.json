@@ -3,8 +3,8 @@
     "seasonal_naive_forecast": 13.201457,
     "rolling_28d_forecast": 76.786378,
     "simple_exponential_smoothing": 141.298216,
-    "lightgbm_forecast": 1857.315952,
-    "xgboost_forecast": 2734.574482,
-    "random_forest_forecast": 5301.69438,
+    "lightgbm_forecast": 74.29263,
+    "xgboost_forecast": 109.38298,
+    "random_forest_forecast": 212.06778,
     "single_exponential_smoothing": 876.07557
 }
