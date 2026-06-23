@@ -40,17 +40,22 @@ train_r, val_r = utils.time_split(history, horizon=7)
 # ------------------------------------------------------------
 print("Forecasting")
 
+# TODO start for all the columns that got overwritten in forecast_processing_time
+
 forecast_models = {
-    "global_mean_forecast": forecast.global_mean,
-    "seasonal_naive_forecast": forecast.seasonal_naive,
-    "rolling_28d_forecast": forecast.rolling_28d,
-    "simple_exponential_smoothing": forecast.simple_exponential_smoothing,
+    #"global_mean_forecast": forecast.global_mean,
+    #"seasonal_naive_forecast": forecast.seasonal_naive,
+    #"rolling_28d_forecast": forecast.rolling_28d,
+    #"single_exponential_smoothing": forecast.single_exponential_smoothing,
+    "double_exponential_smoothing": forecast.double_exponential_smoothing,
+    #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
+    #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
     #"arima_forecast": forecast.arima,
-    "lightgbm_forecast": forecast.lightgbm_forecast,
-    "xgboost_forecast": forecast.xgboost_forecast,
-    "random_forest_forecast": forecast.random_forest_forecast,
+    #"lightgbm_forecast": forecast.lightgbm_forecast,
+    #"xgboost_forecast": forecast.xgboost_forecast,
+    #"random_forest_forecast": forecast.random_forest_forecast,
 }
 
 # ------------------------------------------------------------
@@ -115,18 +120,16 @@ for forecast_name, forecast_func in forecast_models.items():
             processing_time += datetime.now() - current_time
             counter += 1
 
-            print(
-                f"Finished: {result_name} "
-                f"({datetime.now() - current_time})"
-            )
+            print(f"Finished: {result_name} ({datetime.now() - current_time})")
 
+    if counter > 0:
+        with open("recovered_column/forecast_processing_time.json", "r") as f:
+            content = f.read()
+            time = json.loads(content) if content.strip() else {}
 
-    with open("recovered_column/forecast_processing_time.json", "r") as f:
-        content = f.read()
-        time = json.loads(content) if content.strip() else {}
-    time[forecast_name] = processing_time.total_seconds()
-    with open("recovered_column/forecast_processing_time.json", "w") as f:
-        json.dump(time, f) 
+        time[forecast_name] = processing_time.total_seconds() / counter
+        with open("recovered_column/forecast_processing_time.json", "w") as f:
+            json.dump(time, f) 
 
 
 with open("recovered_column/results.json", "w") as f:

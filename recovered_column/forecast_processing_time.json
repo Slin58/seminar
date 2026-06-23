@@ -1,1 +1,10 @@
-{"global_mean_forecast": -0.000601, "seasonal_naive_forecast": -7e-06, "rolling_28d_forecast": -6e-06, "simple_exponential_smoothing": -5e-06, "lightgbm_forecast": -4e-06, "xgboost_forecast": -7e-06, "random_forest_forecast": 5301.69438}
+{
+    "global_mean_forecast": 6.927451,
+    "seasonal_naive_forecast": 13.201457,
+    "rolling_28d_forecast": 76.786378,
+    "simple_exponential_smoothing": 141.298216,
+    "lightgbm_forecast": 1857.315952,
+    "xgboost_forecast": 2734.574482,
+    "random_forest_forecast": 5301.69438,
+    "single_exponential_smoothing": 876.07557
+}

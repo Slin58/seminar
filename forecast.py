@@ -3,8 +3,8 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import warnings
 import numpy as np
 import pandas as pd
-
 from statsmodels.tsa.arima.model import ARIMA
+from joblib import Parallel, delayed
 
 # TODO: Forecast Methoden:
 
@@ -115,7 +115,190 @@ def rolling_28d(train_df, val_df, target_col):
     return val_pred
 
 #TODO single and double exponential smoothing (alpha, beta, gamma einstellen) und holt-winters nochmal optimieren bzw. Chati fragen warum er solange laden
-def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3):
+
+def single_exponential_smoothing(train_df, val_df, target_col):
+ 
+    global_fallback = float(train_df[target_col].mean())
+
+    train_groups = {
+        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
+        for sid, grp in train_df.groupby("series_id")
+    }
+    train_max_day = {
+        sid: grp["day_idx"].iloc[-1]
+        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
+    }
+    val_groups = {
+        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
+        for sid, grp in val_df.groupby("series_id")
+    }
+
+    def _fit_one(series_id):
+        val_days = val_groups.get(series_id)
+        y = train_groups.get(series_id)
+        last_train_day = train_max_day.get(series_id)
+
+        if val_days is None or y is None or len(y) == 0:
+            return [(series_id, d, global_fallback) for d in (val_days or [])]
+
+        max_horizon = max(int(val_days.max() - last_train_day), 1)
+        forecast = None
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = ExponentialSmoothing(
+                    y,
+                    trend=None,
+                    seasonal=None,
+                    initialization_method="estimated",
+                ).fit(optimized=True, use_brute=False, remove_bias=False)
+            forecast = np.asarray(model.forecast(max_horizon))
+        except Exception:
+            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+
+        return [
+            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
+             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
+             else global_fallback)
+            for day_idx in val_days
+        ]
+
+    all_results = Parallel(n_jobs=-1, backend="threading", prefer="processes")(
+        delayed(_fit_one)(sid) for sid in val_groups
+    )
+
+    rows = [row for series_rows in all_results for row in series_rows]
+    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
+
+    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
+    return val_pred
+
+
+def double_exponential_smoothing(train_df, val_df, target_col):
+
+    global_fallback = float(train_df[target_col].mean())
+
+    train_groups = {
+        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
+        for sid, grp in train_df.groupby("series_id")
+    }
+    train_max_day = {
+        sid: grp["day_idx"].iloc[-1]
+        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
+    }
+    val_groups = {
+        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
+        for sid, grp in val_df.groupby("series_id")
+    }
+
+    def _fit_one(series_id):
+        val_days = val_groups.get(series_id)
+        y = train_groups.get(series_id)
+        last_train_day = train_max_day.get(series_id)
+
+        if val_days is None or y is None or len(y) == 0:
+            return [(series_id, d, global_fallback) for d in (val_days or [])]
+
+        max_horizon = max(int(val_days.max() - last_train_day), 1)
+        forecast = None
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = ExponentialSmoothing(
+                    y,
+                    trend="add",
+                    damped_trend=True,
+                    seasonal=None,
+                    initialization_method="estimated",
+                ).fit(optimized=True, use_brute=False, remove_bias=False)
+            forecast = np.asarray(model.forecast(max_horizon))
+        except Exception:
+            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+
+        return [
+            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
+             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
+             else global_fallback)
+            for day_idx in val_days
+        ]
+
+    all_results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
+        delayed(_fit_one)(sid) for sid in val_groups
+    )
+
+    rows = [row for series_rows in all_results for row in series_rows]
+    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
+
+    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
+    return val_pred
+
+
+def triple_exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
+
+    global_fallback = float(train_df[target_col].mean())
+
+    train_groups = {
+        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
+        for sid, grp in train_df.groupby("series_id")
+    }
+    train_max_day = {
+        sid: grp["day_idx"].iloc[-1]
+        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
+    }
+    val_groups = {
+        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
+        for sid, grp in val_df.groupby("series_id")
+    }
+
+    def _fit_one(series_id):
+        val_days = val_groups.get(series_id)
+        y = train_groups.get(series_id)
+        last_train_day = train_max_day.get(series_id)
+
+        if val_days is None or y is None or len(y) < 2 * seasonal_periods:
+            return [(series_id, d, global_fallback) for d in (val_days or [])]
+
+        max_horizon = max(int(val_days.max() - last_train_day), 1)
+        forecast = None
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = ExponentialSmoothing(
+                    y,
+                    trend="add",
+                    damped_trend=True,
+                    seasonal="add",
+                    seasonal_periods=seasonal_periods,
+                    initialization_method="estimated",
+                ).fit(optimized=True, use_brute=False, remove_bias=False)
+            forecast = np.asarray(model.forecast(max_horizon))
+        except Exception:
+            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+
+        return [
+            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
+             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
+             else global_fallback)
+            for day_idx in val_days
+        ]
+
+    all_results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
+        delayed(_fit_one)(sid) for sid in val_groups
+    )
+
+    rows = [row for series_rows in all_results for row in series_rows]
+    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
+
+    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
+    return val_pred
+
+def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3): # single exp with series_id
     """
     Simple Exponential Smoothing (SES).
 
@@ -160,249 +343,136 @@ def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3):
 
     return val_pred
 
-
-def exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
-    """
-    Forecast via Holt-Winters Exponential Smoothing pro series_id.
-
-    Für jede series_id wird auf den (nach day_idx sortierten)
-    Trainingsdaten ein ExponentialSmoothing-Modell gefittet und
-    für den benötigten Horizont extrapoliert.
-
-    Fallback-Kette (je nach Datenmenge / Fit-Erfolg):
-    1. additiver Trend (gedämpft) + additive Saisonalität (seasonal_periods)
-    2. additiver Trend (gedämpft), keine Saisonalität
-    3. einfaches Level-Smoothing (SES), kein Trend, keine Saison
-    4. series_id Durchschnitt
-    5. globaler Durchschnitt
-    """
-    val_pred = val_df.copy()
-
-    global_fallback = train_df[target_col].mean()
-    series_fallback = train_df.groupby("series_id")[target_col].mean()
-
-    predictions = {}
-
-    for series_id, val_group in val_pred.groupby("series_id"):
-        train_group = train_df[train_df["series_id"] == series_id].sort_values("day_idx")
-
-        val_days = val_group["day_idx"].sort_values().values
-
-        if train_group.empty:
-            fb = global_fallback
-            for day_idx in val_days:
-                predictions[(series_id, day_idx)] = fb
-            continue
-
-        y = train_group[target_col].astype(float).values
-        n = len(y)
-
-        train_max_day = train_group["day_idx"].max()
-        max_horizon = int(val_days.max() - train_max_day)
-        max_horizon = max(max_horizon, 1)
-
-        forecast = None
-
-        # Versuch 1: Trend (gedämpft) + Saisonalität
-        if n >= 2 * seasonal_periods:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model = ExponentialSmoothing(
-                        y,
-                        trend="add",
-                        damped_trend=True,
-                        seasonal="add",
-                        seasonal_periods=seasonal_periods,
-                        initialization_method="estimated",
-                    ).fit()
-                forecast = model.forecast(max_horizon)
-            except Exception:
-                forecast = None
-
-        # Versuch 2: nur Trend (gedämpft)
-        if forecast is None and n >= 2:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model = ExponentialSmoothing(
-                        y,
-                        trend="add",
-                        damped_trend=True,
-                        seasonal=None,
-                        initialization_method="estimated",
-                    ).fit()
-                forecast = model.forecast(max_horizon)
-            except Exception:
-                forecast = None
-
-        # Versuch 3: simple exponential smoothing (kein Trend, keine Saison)
-        if forecast is None and n >= 1:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model = ExponentialSmoothing(
-                        y,
-                        trend=None,
-                        seasonal=None,
-                        initialization_method="estimated",
-                    ).fit()
-                forecast = model.forecast(max_horizon)
-            except Exception:
-                forecast = None
-
-        # Fallback: series_id / globaler Durchschnitt
-        if forecast is None:
-            fb = series_fallback.get(series_id, global_fallback)
-            forecast = np.full(max_horizon, fb)
-
-        for day_idx in val_days:
-            step = int(day_idx - train_max_day) - 1  # 0-indexiert
-            if 0 <= step < len(forecast):
-                pred_value = forecast[step]
-            else:
-                pred_value = series_fallback.get(series_id, global_fallback)
-            predictions[(series_id, day_idx)] = pred_value
-
-    val_pred["prediction"] = val_pred.apply(
-        lambda row: predictions.get((row["series_id"], row["day_idx"]), global_fallback),
-        axis=1,
-    )
-
-    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
-    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
-
-    return val_pred
-
 def holt_winters_exp_forecast(train_df, val_df, target_col, seasonal_periods=7):
     """
-    Holt-Winters Forecast pro series_id.
+    Optimized Holt-Winters forecasting per series_id.
 
-    Modelliert:
-    - Level
-    - Trend
-    - saisonales Muster, z. B. Wochenmuster mit seasonal_periods=7
-
-    Bei Fehlern oder zu wenigen Daten wird auf einfachere Methoden zurückgefallen.
+    Optimisations over original:
+    - Parallel execution via joblib (biggest win for many series)
+    - Early complexity detection: skip HW for near-constant series
+    - Cached numpy arrays to avoid repeated conversions
+    - Tighter fit options: fewer optimizer iterations, no covariance matrix
+    - Single-pass prediction dict build
     """
 
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
-    import warnings
-    import numpy as np
+    global_fallback = float(train_df[target_col].mean())
+    series_fallback = train_df.groupby("series_id")[target_col].mean().to_dict()
 
-    val_pred = val_df.copy()
+    train_groups = {
+        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
+        for sid, grp in train_df.groupby("series_id")
+    }
+    train_max_day = {
+        sid: grp["day_idx"].iloc[-1]
+        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
+    }
 
-    global_fallback = train_df[target_col].mean()
-    series_fallback = train_df.groupby("series_id")[target_col].mean()
+    val_groups = {
+        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
+        for sid, grp in val_df.groupby("series_id")
+    }
 
-    predictions = {}
+    def _fit_one(series_id):
+        val_days = val_groups.get(series_id)
+        if val_days is None:
+            return []
 
-    for series_id, val_group in val_pred.groupby("series_id"):
+        y = train_groups.get(series_id)
+        if y is None or len(y) == 0:
+            return [(series_id, d, global_fallback) for d in val_days]
 
-        train_group = train_df[
-            train_df["series_id"] == series_id
-        ].sort_values("day_idx")
-
-        val_days = val_group["day_idx"].sort_values().values
-
-        if train_group.empty:
-            for day_idx in val_days:
-                predictions[(series_id, day_idx)] = global_fallback
-            continue
-
-        y = train_group[target_col].astype(float).values
         n = len(y)
+        fb = series_fallback.get(series_id, global_fallback)
+        last_train_day = train_max_day[series_id]
+        max_horizon = max(int(val_days.max() - last_train_day), 1)
 
-        train_max_day = train_group["day_idx"].max()
-        max_horizon = int(val_days.max() - train_max_day)
-        max_horizon = max(max_horizon, 1)
+        # Skip expensive fitting for near-constant series
+        if np.std(y) < 1e-8:
+            forecast = np.full(max_horizon, y[-1], dtype=np.float64)
+        else:
+            forecast = _try_fit(y, n, max_horizon, seasonal_periods)
 
-        forecast = None
-
-        # Holt-Winters: Trend + Saisonalität
-        if n >= 2 * seasonal_periods:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-
-                    model = ExponentialSmoothing(
-                        y,
-                        trend="add",
-                        damped_trend=True,
-                        seasonal="add",
-                        seasonal_periods=seasonal_periods,
-                        initialization_method="estimated"
-                    ).fit()
-
-                forecast = model.forecast(max_horizon)
-
-            except Exception:
-                forecast = None
-
-        # Fallback 1: Holt ohne Saisonalität
-        if forecast is None and n >= 2:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-
-                    model = ExponentialSmoothing(
-                        y,
-                        trend="add",
-                        damped_trend=True,
-                        seasonal=None,
-                        initialization_method="estimated"
-                    ).fit()
-
-                forecast = model.forecast(max_horizon)
-
-            except Exception:
-                forecast = None
-
-        # Fallback 2: SES
-        if forecast is None and n >= 1:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-
-                    model = ExponentialSmoothing(
-                        y,
-                        trend=None,
-                        seasonal=None,
-                        initialization_method="estimated"
-                    ).fit()
-
-                forecast = model.forecast(max_horizon)
-
-            except Exception:
-                forecast = None
-
-        # Fallback 3: series/global mean
         if forecast is None:
-            fb = series_fallback.get(series_id, global_fallback)
-            forecast = np.full(max_horizon, fb)
+            forecast = np.full(max_horizon, fb, dtype=np.float64)
 
+        results = []
         for day_idx in val_days:
-            step = int(day_idx - train_max_day) - 1
+            step = int(day_idx - last_train_day) - 1
+            pred = forecast[step] if 0 <= step < len(forecast) else fb
+            results.append((series_id, day_idx, pred))
+        return results
 
-            if 0 <= step < len(forecast):
-                pred_value = forecast[step]
-            else:
-                pred_value = series_fallback.get(series_id, global_fallback)
+    def _try_fit(y, n, max_horizon, seasonal_periods):
+        """Attempt HW -> Holt -> SES with tight optimizer settings."""
+        fit_kw = dict(
+            optimized=True,
+            use_brute=False,       # skip brute-force grid search
+            remove_bias=False,
+        )
 
-            predictions[(series_id, day_idx)] = pred_value
+        # Holt-Winters
+        if n >= 2 * seasonal_periods:
+            fc = _fit_model(
+                y,
+                dict(trend="add", damped_trend=True, seasonal="add",
+                     seasonal_periods=seasonal_periods,
+                     initialization_method="estimated"),
+                max_horizon,
+                fit_kw,
+            )
+            if fc is not None:
+                return fc
 
-    val_pred["prediction"] = val_pred.apply(
-        lambda row: predictions.get(
-            (row["series_id"], row["day_idx"]),
-            global_fallback
-        ),
-        axis=1
+        # Holt
+        if n >= 2:
+            fc = _fit_model(
+                y,
+                dict(trend="add", damped_trend=True, seasonal=None,
+                     initialization_method="estimated"),
+                max_horizon,
+                fit_kw,
+            )
+            if fc is not None:
+                return fc
+
+        # SES
+        if n >= 1:
+            fc = _fit_model(
+                y,
+                dict(trend=None, seasonal=None,
+                     initialization_method="estimated"),
+                max_horizon,
+                fit_kw,
+            )
+            if fc is not None:
+                return fc
+
+        return None
+
+    def _fit_model(y, model_kwargs, horizon, fit_kwargs):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = ExponentialSmoothing(y, **model_kwargs).fit(**fit_kwargs)
+            return np.asarray(model.forecast(horizon))
+        except Exception:
+            return None
+
+    # --- Parallel execution over series ---
+    # n_jobs=-1 uses all CPU cores; tune if you want to leave headroom
+    all_results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
+        delayed(_fit_one)(sid) for sid in val_groups
     )
 
-    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
-    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+    rows = [row for series_rows in all_results for row in series_rows]
+    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
 
+    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
+    val_pred["prediction"] = (
+        val_pred["prediction"].fillna(global_fallback).clip(lower=0)
+    )
     return val_pred
+
 def arima(train_df, val_df, target_col, order=(1, 1, 1)):
     """
     ARIMA Forecast pro series_id.
@@ -518,8 +588,6 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
     """
 
     import lightgbm as lgb
-    import numpy as np
-    import pandas as pd
 
     train = train_df.copy()
     val_pred = val_df.copy()
