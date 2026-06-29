@@ -3413,6 +3413,8 @@ def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
 # TODO 
 # Exponential Smoothing (Siehe oben) (Nils)
 # DLinear (Nils)
-# Transformer (Achtung sehr lange Ladezeit evtl. einfach LSTM verwenden) (Laura)
-# CNN (Laura)
-# Random Forest (Laura)
+# LSTM (Laura)
+# HistGradientBoostingRegressor
+# XGBoost Feature Optimized
+# Extra Trees
+#(( Wenn Zeit keine Rolle spielen würde. Dann wären diese beiden noch spannend: PatchTST (aktueller Forschungsliebling für Zeitreihen) und N-HiTS / N-BEATS ))

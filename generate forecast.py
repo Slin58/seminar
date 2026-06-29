@@ -55,7 +55,7 @@ forecast_models = {
     #"xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
-    ##"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized, # TODO dauert in raw_sales 10 min -> ca 4 h Ladezeit
+    #"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
     #"cnn_forecast": forecast.cnn_forecast, # TODO Training samples: 2,750,000
         # Window: 28
         # Epochs: 5
@@ -65,7 +65,7 @@ forecast_models = {
         # Epoch 4/5 - Loss: 0.186992
         # Epoch 5/5 - Loss: 0.183760
         # Finished: raw_sales + cnn_forecast (0:27:36.176654)
-    #"cnn_forecast_fast": forecast.cnn_forecast_fast, # TODO Training samples: 3,100,000
+    "cnn_forecast_fast": forecast.cnn_forecast_fast, # TODO Training samples: 3,100,000
         # Window: 21
         # Epochs: 3
         # Batch size: 16384
@@ -104,15 +104,7 @@ forecast_models = {
         # Epoch 2/3 - Loss: 0.184966
         # Epoch 3/3 - Loss: 0.168801
         # Finished: raw_sales + lstm_forecast (0:25:00.256761)
-    #"lstm_forecast_fast": forecast.lstm_forecast_fast, # TODO Training samples: 3,100,000
-        # Window: 21
-        # Epochs: 3
-        # Batch size: 8192
-        # Epoch 1/3 - Loss: 0.512266
-        # Epoch 2/3 - Loss: 0.210390
-        # Epoch 3/3 - Loss: 0.195152
-        # Predicting validation...
-        # Finished: raw_sales + lstm_forecast_fast (0:05:45.542621)
+    #"lstm_forecast_fast": forecast.lstm_forecast_fast, 
     #"catboost_forecast": forecast.catboost_forecast, # TODO Run: raw_sales + catboost_forecast
         # Finished: raw_sales + catboost_forecast (0:26:24.784278)
     #"catboost_forecast_fast": forecast.catboost_forecast_fast,
@@ -122,7 +114,7 @@ forecast_models = {
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized,
     #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Run: raw_sales + xgboost_forecast_feature_optimized
         # Finished: raw_sales + xgboost_forecast_feature_optimized (0:30:48.924779)
-    "xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
+    #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
     }
 
 # TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
