@@ -103,187 +103,143 @@ def rolling_28d(train_df, val_df, target_col):
 
     return val_pred
 
+
 #TODO single and double exponential smoothing (alpha, beta, gamma einstellen) und holt-winters nochmal optimieren bzw. Chati fragen warum er solange laden
 
 def single_exponential_smoothing(train_df, val_df, target_col):
- 
-    global_fallback = float(train_df[target_col].mean())
+    from statsmodels.tsa.holtwinters import SimpleExpSmoothing
 
-    train_groups = {
-        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
-        for sid, grp in train_df.groupby("series_id")
-    }
-    train_max_day = {
-        sid: grp["day_idx"].iloc[-1]
-        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
-    }
-    val_groups = {
-        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
-        for sid, grp in val_df.groupby("series_id")
-    }
+    val_pred = val_df.copy()
 
-    def _fit_one(series_id):
-        val_days = val_groups.get(series_id)
-        y = train_groups.get(series_id)
-        last_train_day = train_max_day.get(series_id)
+    fallback = train_df[target_col].mean()
 
-        if val_days is None or y is None or len(y) == 0:
-            return [(series_id, d, global_fallback) for d in (val_days or [])]
+    predictions = {}
 
-        max_horizon = max(int(val_days.max() - last_train_day), 1)
-        forecast = None
+    for series_id, train_series in train_df.groupby("series_id"):
 
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model = ExponentialSmoothing(
-                    y,
-                    trend=None,
-                    seasonal=None,
-                    initialization_method="estimated",
-                ).fit(optimized=True, use_brute=False, remove_bias=False)
-            forecast = np.asarray(model.forecast(max_horizon))
-        except Exception:
-            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+        # Convert to numpy to avoid index warnings
+        y = train_series[target_col].to_numpy()
 
-        return [
-            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
-             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
-             else global_fallback)
-            for day_idx in val_days
-        ]
+        if len(y) == 0:
+            predictions[series_id] = fallback
 
-    all_results = Parallel(n_jobs=-1, backend="threading", prefer="processes")(
-        delayed(_fit_one)(sid) for sid in val_groups
+        elif len(y) == 1:
+            predictions[series_id] = y[0]
+
+        else:
+            try:
+                fit = SimpleExpSmoothing(y).fit(optimized=True)
+
+                predictions[series_id] = float(fit.forecast(1)[0])
+
+            except Exception:
+                predictions[series_id] = y.mean()
+
+    val_pred["prediction"] = (
+        val_pred["series_id"]
+        .map(predictions)
+        .fillna(fallback)
+        .clip(lower=0)
     )
-
-    rows = [row for series_rows in all_results for row in series_rows]
-    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
-
-    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
-    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
+    print(f"smoothing_level: {fit.params['smoothing_level']}")
     return val_pred
 
 def double_exponential_smoothing(train_df, val_df, target_col):
+    from statsmodels.tsa.holtwinters import Holt
 
-    global_fallback = float(train_df[target_col].mean())
+    val_pred = val_df.copy()
 
-    train_groups = {
-        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
-        for sid, grp in train_df.groupby("series_id")
-    }
-    train_max_day = {
-        sid: grp["day_idx"].iloc[-1]
-        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
-    }
-    val_groups = {
-        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
-        for sid, grp in val_df.groupby("series_id")
-    }
+    fallback = train_df[target_col].mean()
+    predictions = {}
 
-    def _fit_one(series_id):
-        val_days = val_groups.get(series_id)
-        y = train_groups.get(series_id)
-        last_train_day = train_max_day.get(series_id)
+    for series_id, train_series in train_df.groupby("series_id"):
 
-        if val_days is None or y is None or len(y) == 0:
-            return [(series_id, d, global_fallback) for d in (val_days or [])]
+        y = train_series[target_col].dropna().to_numpy()
 
-        max_horizon = max(int(val_days.max() - last_train_day), 1)
-        forecast = None
+        if len(y) < 2:
+            predictions[series_id] = y.mean() if len(y) else fallback
+            continue
 
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model = ExponentialSmoothing(
-                    y,
-                    trend="add",
-                    damped_trend=True,
-                    seasonal=None,
-                    initialization_method="estimated",
-                ).fit(optimized=True, use_brute=False, remove_bias=False)
-            forecast = np.asarray(model.forecast(max_horizon))
-        except Exception:
-            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+            fit = Holt(y).fit(optimized=True)
 
-        return [
-            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
-             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
-             else global_fallback)
-            for day_idx in val_days
-        ]
+            alpha = fit.params["smoothing_level"]
+            beta = fit.params["smoothing_trend"]
 
-    all_results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
-        delayed(_fit_one)(sid) for sid in val_groups
+            # print(f"series_id={series_id}, alpha={alpha:.4f}, beta={beta:.4f}"
+
+            predictions[series_id] = float(fit.forecast(1)[0])
+
+        except Exception as e:
+            print(f"series_id={series_id}: {e}")
+            predictions[series_id] = y.mean()
+
+    val_pred["prediction"] = (
+        val_pred["series_id"]
+        .map(predictions)
+        .fillna(fallback)
+        .clip(lower=0)
     )
 
-    rows = [row for series_rows in all_results for row in series_rows]
-    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
-
-    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
-    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
     return val_pred
 
-def triple_exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
+def triple_exponential_smoothing(
+    train_df,
+    val_df,
+    target_col,
+    seasonal_periods=7
+):
+    import pandas as pd
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-    global_fallback = float(train_df[target_col].mean())
+    val_pred = val_df.copy()
 
-    train_groups = {
-        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
-        for sid, grp in train_df.groupby("series_id")
-    }
-    train_max_day = {
-        sid: grp["day_idx"].iloc[-1]
-        for sid, grp in train_df.sort_values("day_idx").groupby("series_id")
-    }
-    val_groups = {
-        sid: grp.sort_values("day_idx")["day_idx"].to_numpy()
-        for sid, grp in val_df.groupby("series_id")
-    }
+    fallback = train_df[target_col].mean()
+    predictions = {}
 
-    def _fit_one(series_id):
-        val_days = val_groups.get(series_id)
-        y = train_groups.get(series_id)
-        last_train_day = train_max_day.get(series_id)
+    for series_id, train_series in train_df.groupby("series_id"):
 
-        if val_days is None or y is None or len(y) < 2 * seasonal_periods:
-            return [(series_id, d, global_fallback) for d in (val_days or [])]
+        y = train_series[target_col].dropna().to_numpy()
 
-        max_horizon = max(int(val_days.max() - last_train_day), 1)
-        forecast = None
+        # Need enough data for seasonality
+        if len(y) < 2 * seasonal_periods:
+            predictions[series_id] = y.mean() if len(y) else fallback
+            continue
 
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model = ExponentialSmoothing(
-                    y,
-                    trend="add",
-                    damped_trend=True,
-                    seasonal="add",
-                    seasonal_periods=seasonal_periods,
-                    initialization_method="estimated",
-                ).fit(optimized=True, use_brute=False, remove_bias=False)
-            forecast = np.asarray(model.forecast(max_horizon))
-        except Exception:
-            forecast = np.full(max_horizon, global_fallback, dtype=np.float64)
+            fit = ExponentialSmoothing(
+                y,
+                trend="add",
+                seasonal="add",
+                seasonal_periods=seasonal_periods
+            ).fit(optimized=True)
 
-        return [
-            (series_id, day_idx, forecast[int(day_idx - last_train_day) - 1]
-             if 0 <= int(day_idx - last_train_day) - 1 < len(forecast)
-             else global_fallback)
-            for day_idx in val_days
-        ]
+            alpha = fit.params["smoothing_level"]
+            beta = fit.params["smoothing_trend"]
+            gamma = fit.params["smoothing_seasonal"]
 
-    all_results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
-        delayed(_fit_one)(sid) for sid in val_groups
+            print(
+                f"series_id={series_id}, "
+                f"alpha={alpha:.4f}, "
+                f"beta={beta:.4f}, "
+                f"gamma={gamma:.4f}"
+            )
+
+            predictions[series_id] = float(fit.forecast(1)[0])
+
+        except Exception as e:
+            print(f"series_id={series_id}: {e}")
+            predictions[series_id] = y.mean()
+
+    val_pred["prediction"] = (
+        val_pred["series_id"]
+        .map(predictions)
+        .fillna(fallback)
+        .clip(lower=0)
     )
 
-    rows = [row for series_rows in all_results for row in series_rows]
-    pred_df = pd.DataFrame(rows, columns=["series_id", "day_idx", "prediction"])
-
-    val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
-    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
     return val_pred
+
 
 def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3): # single exp with series_id
     """

@@ -40,8 +40,6 @@ train_r, val_r = utils.time_split(history, horizon=7)
 # ------------------------------------------------------------
 print("Forecasting")
 
-# TODO start for all the columns that got overwritten in forecast_processing_time
-
 forecast_models = {
     #"global_mean_forecast": forecast.global_mean,
     #"seasonal_naive_forecast": forecast.seasonal_naive,
@@ -126,6 +124,9 @@ forecast_models = {
         # Finished: raw_sales + xgboost_forecast_feature_optimized (0:30:48.924779)
     }
 
+# TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
+
+
 # ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen
 # ------------------------------------------------------------
@@ -136,6 +137,7 @@ with open("recovered_column/results.json", "r") as f:
     all_results = json.loads(content) if content.strip() else {}
 
 for forecast_name, forecast_func in forecast_models.items():
+    print(f"starting at: {datetime.now()}")
     processing_time = datetime.now() - datetime.now()
     counter = 0
 
