@@ -41,7 +41,7 @@ train_r, val_r = utils.time_split(history, horizon=7)
 print("Forecasting")
 
 forecast_models = {
-    "global_mean_forecast": forecast.global_mean,
+    #"global_mean_forecast": forecast.global_mean,
     #"seasonal_naive_forecast": forecast.seasonal_naive,
     #"rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
@@ -122,9 +122,11 @@ forecast_models = {
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized,
     #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Run: raw_sales + xgboost_forecast_feature_optimized
         # Finished: raw_sales + xgboost_forecast_feature_optimized (0:30:48.924779)
+    "xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
     }
 
 # TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
+# LSTM, catboost, cnn
 
 recovery_models = ["recovered_daily_sales_stl_real", "sale_amount"] # if list empty all recovery methods are used
 

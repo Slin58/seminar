@@ -1,16 +1,1 @@
-{
-    "global_mean_forecast": 6.927451,
-    "seasonal_naive_forecast": 13.201457,
-    "rolling_28d_forecast": 76.786378,
-    "simple_exponential_smoothing": 141.298216,
-    "lightgbm_forecast": 74.29263,
-    "xgboost_forecast": 109.38298,
-    "random_forest_forecast": 212.06778,
-    "single_exponential_smoothing": 135.99247664,
-    "random_forest_forecast_optimized": 379.67490983999994,
-    "cnn_forecast_original_3epochs": 982.0134292399999,
-    "lstm_forecast_fast": 275.76387783999996,
-    "catboost_forecast_fast": 141.12862424000002,
-    "lightgbm_forecast_optimized": 178.81114743999998,
-    "lightgbm_forecast_feature_optimized": 505.1185518
-}
+{"global_mean_forecast": 6.927451, "seasonal_naive_forecast": 13.201457, "rolling_28d_forecast": 76.786378, "simple_exponential_smoothing": 141.298216, "lightgbm_forecast": 74.29263, "xgboost_forecast": 109.38298, "random_forest_forecast": 212.06778, "single_exponential_smoothing": 135.99247664, "random_forest_forecast_optimized": 379.67490983999994, "cnn_forecast_original_3epochs": 982.0134292399999, "lstm_forecast_fast": 275.76387783999996, "catboost_forecast_fast": 141.12862424000002, "lightgbm_forecast_optimized": 178.81114743999998, "lightgbm_forecast_feature_optimized": 505.1185518, "xgboost_forecast_feature_fast": 231.730767}

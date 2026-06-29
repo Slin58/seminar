@@ -1211,6 +1211,106 @@ def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_stat
 
     return val_feat
 
+def xgboost_forecast_feature_fast(train_df, val_df, target_col, random_state=42):
+    import xgboost as xgb
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        for lag in [1, 2, 3, 7, 14, 28]:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [7, 14, 28]:
+            df[f"roll_mean_{w}"] = (
+                shifted.rolling(w, min_periods=1).mean()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_std_{w}"] = (
+                shifted.rolling(w, min_periods=2).std()
+                .reset_index(level=0, drop=True)
+            )
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id", "product_id", "store_id", "city_id", "management_group_id",
+        "weekday", "month", "week_of_year", "is_weekend", "day_idx",
+        "discount", "holiday_flag", "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "psd",
+        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_28",
+        "roll_mean_7", "roll_std_7",
+        "roll_mean_14", "roll_std_14",
+        "roll_mean_28", "roll_std_28",
+        "trend_7", "trend_14", "trend_28",
+        "ratio_roll7", "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = xgb.XGBRegressor(
+        objective="reg:squarederror",
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=7,
+        min_child_weight=30,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.2,
+        reg_lambda=1.0,
+        tree_method="hist",
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=0
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
 def random_forest_forecast(train_df, val_df, target_col, random_state=42):
     """
     Random Forest Forecast.

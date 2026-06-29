@@ -221,11 +221,20 @@ recovery_methods = {
     # },
 
 }
+# TODO Kosten Nutzen?
+# knn über 3h
+# bayesian hat zu lange gedauert 
+# tobit model: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT 
+# Transformer
+# Autoencoder
+# XGBoost Recovery
+# LightGBM Recovery
+# Random Forest Recovery
+# iterative
+# interpolation spline series
+# interpolation polynomial
 
-# knn über 3h, bayesian hat zu lange gedauert
 # transformer: 2:13 h -> 1.1008
-# tobit model: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT
-
 # kalman-smoothing: 1:38 h -> mean recovered sales: 1.1415
 # stl real: 1:18 h -> mean recoevered sales: 1.0977
 # autoencoder: 0:18 h -> 1.0779
