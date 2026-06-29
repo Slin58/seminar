@@ -41,7 +41,7 @@ train_r, val_r = utils.time_split(history, horizon=7)
 print("Forecasting")
 
 forecast_models = {
-    #"global_mean_forecast": forecast.global_mean,
+    "global_mean_forecast": forecast.global_mean,
     #"seasonal_naive_forecast": forecast.seasonal_naive,
     #"rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
@@ -120,12 +120,13 @@ forecast_models = {
         # Finished: raw_sales + catboost_forecast_optimized (0:29:31.443697)
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized,
-    "xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Run: raw_sales + xgboost_forecast_feature_optimized
+    #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Run: raw_sales + xgboost_forecast_feature_optimized
         # Finished: raw_sales + xgboost_forecast_feature_optimized (0:30:48.924779)
     }
 
 # TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
 
+recovery_models = ["recovered_daily_sales_stl_real", "sale_amount"] # if list empty all recovery methods are used
 
 # ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen
@@ -141,28 +142,8 @@ for forecast_name, forecast_func in forecast_models.items():
     processing_time = datetime.now() - datetime.now()
     counter = 0
 
-    # for col in history.columns:
-    #     if col.startswith("recovered_daily_sales_") or col == "sale_amount":
-    #             current_time = datetime.now()
-
-    #             val_pred = forecast_func(
-    #                 train_df=train_r,
-    #                 val_df=val_r,
-    #                 target_col=col
-    #             )
-        
-    #             name = col.replace("recovered_daily_sales_", "")
-    #             if name == "sale_amount":
-    #                 name = "raw_sales"
-
-    #             result_name = f"{name} + {forecast_name}"
-    #             all_results[result_name] = utils.evaluate_forecast(val_pred)
-                
-    #             processing_time += datetime.now()-current_time
-    #             counter += 1
-
     for col in history.columns:
-        if col.startswith("recovered_daily_sales_") or col == "sale_amount":
+        if (col.startswith("recovered_daily_sales_") or col == "sale_amount") and (col in recovery_models or len(recovery_models) == 0):
 
             name = col.replace("recovered_daily_sales_", "")
             if name == "sale_amount":
@@ -170,7 +151,7 @@ for forecast_name, forecast_func in forecast_models.items():
 
             result_name = f"{name} + {forecast_name}"
 
-            # pred_folder = "forecast_predictions" # TODO
+            # pred_folder = "forecast_predictions" # TODO Ensembles
             # os.makedirs(pred_folder, exist_ok=True)
 
             # pred_name = result_name.replace(" ", "_").replace("+", "plus").replace("/", "_")
