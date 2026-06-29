@@ -45,8 +45,8 @@ forecast_models = {
     #"seasonal_naive_forecast": forecast.seasonal_naive,
     #"rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
-    #"double_exponential_smoothing": forecast.double_exponential_smoothing,
-    #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
+    "double_exponential_smoothing": forecast.double_exponential_smoothing,
+    "triple_exponential_smoothing": forecast.triple_exponential_smoothing,
     #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
@@ -65,7 +65,7 @@ forecast_models = {
         # Epoch 4/5 - Loss: 0.186992
         # Epoch 5/5 - Loss: 0.183760
         # Finished: raw_sales + cnn_forecast (0:27:36.176654)
-    "cnn_forecast_fast": forecast.cnn_forecast_fast, # TODO Training samples: 3,100,000
+    #"cnn_forecast_fast": forecast.cnn_forecast_fast, # TODO Training samples: 3,100,000
         # Window: 21
         # Epochs: 3
         # Batch size: 16384
