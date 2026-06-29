@@ -8,16 +8,7 @@ from joblib import Parallel, delayed
 
 # TODO: Forecast Methoden:
 
-# - random_forest Run: raw_sales + random_forest_forecast
-    # [Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 8 concurrent workers.
-    # [Parallel(n_jobs=-1)]: Done  34 tasks      | elapsed: 12.0min
-    # [Parallel(n_jobs=-1)]: Done 184 tasks      | elapsed: 54.1min
-    # [Parallel(n_jobs=-1)]: Done 200 out of 200 | elapsed: 58.4min finished
-    # [Parallel(n_jobs=8)]: Using backend ThreadingBackend with 8 concurrent workers.
-    # [Parallel(n_jobs=8)]: Done  34 tasks      | elapsed:    0.5s
-    # [Parallel(n_jobs=8)]: Done 184 tasks      | elapsed:    2.6s
-    # [Parallel(n_jobs=8)]: Done 200 out of 200 | elapsed:    2.8s finished
-    # Finished: raw_sales + random_forest_forecast (0:58:52.013636)
+# - random_forest
 # - xgboost
 # - lightgbm
 # - CNN
@@ -48,7 +39,6 @@ def global_mean(train_df, val_df, target_col):
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
-
 
 def seasonal_naive(train_df, val_df, target_col):
     """
@@ -87,7 +77,6 @@ def seasonal_naive(train_df, val_df, target_col):
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
-
 
 def rolling_28d(train_df, val_df, target_col):
     """
@@ -175,7 +164,6 @@ def single_exponential_smoothing(train_df, val_df, target_col):
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
     return val_pred
 
-
 def double_exponential_smoothing(train_df, val_df, target_col):
 
     global_fallback = float(train_df[target_col].mean())
@@ -235,7 +223,6 @@ def double_exponential_smoothing(train_df, val_df, target_col):
     val_pred = val_df.copy().merge(pred_df, on=["series_id", "day_idx"], how="left")
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback).clip(lower=0)
     return val_pred
-
 
 def triple_exponential_smoothing(train_df, val_df, target_col, seasonal_periods=7):
 
@@ -573,7 +560,6 @@ def arima(train_df, val_df, target_col, order=(1, 1, 1)):
 
     return val_pred
 
-
 def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
     """
     LightGBM Forecast.
@@ -689,6 +675,312 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
 
     val_feat["prediction"] = model.predict(X_val)
 
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def lightgbm_forecast_optimized(train_df, val_df, target_col, random_state=42):
+    import lightgbm as lgb
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag2"] = grp.shift(2)
+        df["lag3"] = grp.shift(3)
+        df["lag7"] = grp.shift(7)
+        df["lag14"] = grp.shift(14)
+        df["lag28"] = grp.shift(28)
+
+        df["rolling7"] = grp.shift(1).rolling(7, min_periods=1).mean().reset_index(level=0, drop=True)
+        df["rolling14"] = grp.shift(1).rolling(14, min_periods=1).mean().reset_index(level=0, drop=True)
+        df["rolling28"] = grp.shift(1).rolling(28, min_periods=1).mean().reset_index(level=0, drop=True)
+
+        df["rolling_std7"] = grp.shift(1).rolling(7, min_periods=2).std().reset_index(level=0, drop=True)
+        df["rolling_std28"] = grp.shift(1).rolling(28, min_periods=2).std().reset_index(level=0, drop=True)
+
+        df["diff1"] = df["lag1"] - df["lag2"]
+        df["diff7"] = df["lag7"] - df["lag14"]
+
+        df["ratio_lag1_rolling7"] = df["lag1"] / (df["rolling7"] + 1e-6)
+        df["ratio_lag7_rolling28"] = df["lag7"] / (df["rolling28"] + 1e-6)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id", "product_id", "store_id", "city_id", "management_group_id",
+        "weekday", "month", "week_of_year", "is_weekend", "day_idx",
+        "discount", "holiday_flag", "activity_flag",
+        "avg_temperature", "avg_humidity", "avg_wind_level", "precpt",
+        "lag1", "lag2", "lag3", "lag7", "lag14", "lag28",
+        "rolling7", "rolling14", "rolling28",
+        "rolling_std7", "rolling_std28",
+        "diff1", "diff7",
+        "ratio_lag1_rolling7", "ratio_lag7_rolling28",
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = lgb.LGBMRegressor(
+        n_estimators=500,
+        learning_rate=0.03,
+        num_leaves=128,
+        max_depth=-1,
+        min_child_samples=50,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.1,
+        reg_lambda=1.0,
+        objective="regression",
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
+    import lightgbm as lgb
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        # ------------------------------------------------------------
+        # Lags
+        # ------------------------------------------------------------
+        lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+
+        for lag in lags:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        # ------------------------------------------------------------
+        # Rolling Features
+        # ------------------------------------------------------------
+        shifted = grp.shift(1)
+
+        windows = [3, 7, 14, 21, 28]
+
+        for w in windows:
+            df[f"roll_mean_{w}"] = (
+                shifted
+                .rolling(w, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_std_{w}"] = (
+                shifted
+                .rolling(w, min_periods=2)
+                .std()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_min_{w}"] = (
+                shifted
+                .rolling(w, min_periods=1)
+                .min()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_max_{w}"] = (
+                shifted
+                .rolling(w, min_periods=1)
+                .max()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_median_{w}"] = (
+                shifted
+                .rolling(w, min_periods=1)
+                .median()
+                .reset_index(level=0, drop=True)
+            )
+
+        # ------------------------------------------------------------
+        # Trend Features
+        # ------------------------------------------------------------
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        # ------------------------------------------------------------
+        # Interaction Features
+        # ------------------------------------------------------------
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    # ------------------------------------------------------------
+    # Combine Train + Validation for lag features
+    # ------------------------------------------------------------
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    # ------------------------------------------------------------
+    # Feature Columns
+    # ------------------------------------------------------------
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "weekday_sin",
+        "weekday_cos",
+        "month_sin",
+        "month_cos",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "psd",
+    ]
+
+    feature_cols += [f"lag_{lag}" for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "trend_ratio_7",
+        "trend_ratio_14",
+        "trend_ratio_28",
+        "lag1_roll7",
+        "lag1_roll28",
+        "lag7_roll7",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    # ------------------------------------------------------------
+    # Prepare Data
+    # ------------------------------------------------------------
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # ------------------------------------------------------------
+    # Model
+    # ------------------------------------------------------------
+    model = lgb.LGBMRegressor(
+        objective="regression_l1",
+        boosting_type="gbdt",
+
+        n_estimators=700,
+        learning_rate=0.03,
+
+        num_leaves=63,
+        max_depth=10,
+        min_child_samples=30,
+
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+
+        reg_alpha=0.5,
+        reg_lambda=1.0,
+
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
     val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
 
     return val_feat
@@ -827,6 +1119,142 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
+def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
+    import xgboost as xgb
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 21, 28]:
+            df[f"roll_mean_{w}"] = (
+                shifted.rolling(w, min_periods=1).mean()
+                .reset_index(level=0, drop=True)
+            )
+            df[f"roll_std_{w}"] = (
+                shifted.rolling(w, min_periods=2).std()
+                .reset_index(level=0, drop=True)
+            )
+            df[f"roll_min_{w}"] = (
+                shifted.rolling(w, min_periods=1).min()
+                .reset_index(level=0, drop=True)
+            )
+            df[f"roll_max_{w}"] = (
+                shifted.rolling(w, min_periods=1).max()
+                .reset_index(level=0, drop=True)
+            )
+            df[f"roll_median_{w}"] = (
+                shifted.rolling(w, min_periods=1).median()
+                .reset_index(level=0, drop=True)
+            )
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id", "product_id", "store_id", "city_id", "management_group_id",
+        "weekday", "month", "week_of_year", "is_weekend",
+        "weekday_sin", "weekday_cos", "month_sin", "month_cos",
+        "day_idx",
+        "discount", "holiday_flag", "activity_flag",
+        "avg_temperature", "avg_humidity", "avg_wind_level", "precpt",
+        "psd",
+    ]
+
+    feature_cols += [f"lag_{lag}" for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7", "trend_14", "trend_28",
+        "trend_ratio_7", "trend_ratio_14", "trend_ratio_28",
+        "lag1_roll7", "lag1_roll28", "lag7_roll7",
+        "ratio_roll7", "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = xgb.XGBRegressor(
+        objective="reg:absoluteerror",
+        n_estimators=700,
+        learning_rate=0.03,
+        max_depth=8,
+        min_child_weight=30,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.5,
+        reg_lambda=1.0,
+        tree_method="hist",
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=0
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
 def random_forest_forecast(train_df, val_df, target_col, random_state=42):
     """
     Random Forest Forecast.
@@ -960,6 +1388,1968 @@ def random_forest_forecast(train_df, val_df, target_col, random_state=42):
 
     val_feat["prediction"] = model.predict(X_val)
 
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def random_forest_forecast_optimized(train_df, val_df, target_col, random_state=42):
+    from sklearn.ensemble import RandomForestRegressor
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["week_of_year"] = pd.to_datetime(df["dt"]).dt.isocalendar().week.astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+        df["lag14"] = grp.shift(14)
+        df["lag28"] = grp.shift(28)
+
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std_7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std_28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "week_of_year",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "lag1",
+        "lag7",
+        "lag14",
+        "lag28",
+        "rolling7",
+        "rolling28",
+        "rolling_std_7",
+        "rolling_std_28",
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = RandomForestRegressor(
+        n_estimators=75,
+        max_depth=15,
+        min_samples_leaf=30,
+        max_features="sqrt",
+        n_jobs=-1,
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def random_forest_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
+    from sklearn.ensemble import RandomForestRegressor
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+        df["weekday"] = df["dt"].dt.weekday
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        # Lags
+        df["lag1"] = grp.shift(1)
+        df["lag2"] = grp.shift(2)
+        df["lag3"] = grp.shift(3)
+        df["lag6"] = grp.shift(6)
+        df["lag7"] = grp.shift(7)
+        df["lag8"] = grp.shift(8)
+        df["lag14"] = grp.shift(14)
+        df["lag28"] = grp.shift(28)
+
+        # Rolling Means
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling14"] = (
+            grp.shift(1)
+            .rolling(14, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        # Rolling Std
+        df["rolling_std_7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std_14"] = (
+            grp.shift(1)
+            .rolling(14, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std_28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        # Change / Trend Features
+        df["diff1"] = df["lag1"] - df["lag2"]
+        df["diff7"] = df["lag7"] - df["lag14"]
+
+        df["ratio_lag1_rolling7"] = df["lag1"] / (df["rolling7"] + 1e-6)
+        df["ratio_lag7_rolling28"] = df["lag7"] / (df["rolling28"] + 1e-6)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "is_weekend",
+        "week_of_year",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "lag1",
+        "lag2",
+        "lag3",
+        "lag6",
+        "lag7",
+        "lag8",
+        "lag14",
+        "lag28",
+
+        "rolling7",
+        "rolling14",
+        "rolling28",
+
+        "rolling_std_7",
+        "rolling_std_14",
+        "rolling_std_28",
+
+        "diff1",
+        "diff7",
+        "ratio_lag1_rolling7",
+        "ratio_lag7_rolling28",
+
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = RandomForestRegressor(
+        n_estimators=75,
+        max_depth=15,
+        min_samples_leaf=30,
+        max_features="sqrt",
+        n_jobs=-1,
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4096, random_state=42):
+    """
+    CNN Forecast.
+
+    Nutzt pro series_id die letzten `window` Tage als Input
+    und sagt die nächsten Validierungstage voraus.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    # ------------------------------------------------------------
+    # 1. Trainingssequenzen bauen
+    # ------------------------------------------------------------
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    # ------------------------------------------------------------
+    # 3. CNN Modell
+    # ------------------------------------------------------------
+
+    class CNNForecast(nn.Module):
+        def __init__(self, window):
+            super().__init__()
+
+            self.net = nn.Sequential(
+                nn.Conv1d(1, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+                nn.Linear(64, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1)
+            )
+
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    model = CNNForecast(window)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("\n=== CNN Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+
+        for xb, yb in loader:
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / len(loader):.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Forecast für Validation
+    # ------------------------------------------------------------
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = train_group[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(history_values[-window:], dtype=np.float32).reshape(1, -1)
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = torch.tensor(x_scaled, dtype=torch.float32).unsqueeze(1)
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            # autoregressiv: Prognose wird für nächsten Tag weiterverwendet
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get((r["series_id"], r["day_idx"]), global_fallback),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def cnn_forecast_fast(
+    train_df,
+    val_df,
+    target_col,
+    window=21,
+    epochs=3,
+    batch_size=16384,
+    random_state=42
+):
+    """
+    Faster CNN Forecast.
+    Nutzt weiterhin alle Daten, aber mit kleinerem Modell,
+    größerer Batch Size und optional GPU.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    # ------------------------------------------------------------
+    # 1. Trainingssequenzen bauen
+    # ------------------------------------------------------------
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    # ------------------------------------------------------------
+    # 3. Kleineres CNN-Modell
+    # ------------------------------------------------------------
+
+    class CNNForecastFast(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+            self.net = nn.Sequential(
+                nn.Conv1d(1, 16, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.Conv1d(16, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+
+                nn.Linear(32, 16),
+                nn.ReLU(),
+
+                nn.Linear(16, 1)
+            )
+
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    model = CNNForecastFast().to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("\n=== Fast CNN Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+        n_batches = 0
+
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / n_batches:.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Forecast für Validation
+    # ------------------------------------------------------------
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = (
+            train_group[target_col]
+            .fillna(global_fallback)
+            .values
+            .astype(np.float32)
+            .tolist()
+        )
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(
+                    history_values[-window:],
+                    dtype=np.float32
+                ).reshape(1, -1)
+
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = (
+                    torch.tensor(x_scaled, dtype=torch.float32)
+                    .unsqueeze(1)
+                    .to(device)
+                )
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).cpu().numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            # autoregressiv weiterverwenden
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get(
+            (r["series_id"], r["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def cnn_forecast_balanced(
+    train_df,
+    val_df,
+    target_col,
+    window=28,
+    epochs=3,
+    batch_size=16384,
+    random_state=42
+):
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    class CNNForecastBalanced(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+            self.net = nn.Sequential(
+                nn.Conv1d(1, 24, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.Conv1d(24, 48, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+
+                nn.Linear(48, 24),
+                nn.ReLU(),
+
+                nn.Linear(24, 1)
+            )
+
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    model = CNNForecastBalanced().to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    print("\n=== Balanced CNN Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+        n_batches = 0
+
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / n_batches:.6f}")
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = (
+            train_group[target_col]
+            .fillna(global_fallback)
+            .values
+            .astype(np.float32)
+            .tolist()
+        )
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(
+                    history_values[-window:],
+                    dtype=np.float32
+                ).reshape(1, -1)
+
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = (
+                    torch.tensor(x_scaled, dtype=torch.float32)
+                    .unsqueeze(1)
+                    .to(device)
+                )
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).cpu().numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get(
+            (r["series_id"], r["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def cnn_forecast_3epochs(
+    train_df,
+    val_df,
+    target_col,
+    window=28,
+    epochs=3,
+    batch_size=16384,
+    random_state=42
+):
+    """
+    CNN Forecast.
+    Originale Architektur, aber nur 3 Epochs und größere Batch Size.
+    Ziel: fast gleiche Qualität wie Original-CNN, aber schneller.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    class CNNForecast(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+            self.net = nn.Sequential(
+                nn.Conv1d(1, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.Conv1d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+
+                nn.Linear(64, 32),
+                nn.ReLU(),
+
+                nn.Linear(32, 1)
+            )
+
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    model = CNNForecast().to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    print("\n=== CNN Forecast Training: Original Architecture, 3 Epochs ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+        n_batches = 0
+
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / n_batches:.6f}")
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = (
+            train_group[target_col]
+            .fillna(global_fallback)
+            .values
+            .astype(np.float32)
+            .tolist()
+        )
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(history_values[-window:], dtype=np.float32).reshape(1, -1)
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = (
+                    torch.tensor(x_scaled, dtype=torch.float32)
+                    .unsqueeze(1)
+                    .to(device)
+                )
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).cpu().numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get(
+            (r["series_id"], r["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epochs=3, batch_size=4096, random_state=42):
+    """
+    CNN Forecast.
+
+    Nutzt pro series_id die letzten `window` Tage als Input
+    und sagt die nächsten Validierungstage voraus.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    # ------------------------------------------------------------
+    # 1. Trainingssequenzen bauen
+    # ------------------------------------------------------------
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    # ------------------------------------------------------------
+    # 3. CNN Modell
+    # ------------------------------------------------------------
+
+    class CNNForecast(nn.Module):
+        def __init__(self, window):
+            super().__init__()
+
+            self.net = nn.Sequential(
+                nn.Conv1d(1, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+                nn.Linear(64, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1)
+            )
+
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    model = CNNForecast(window)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("\n=== CNN Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+
+        for xb, yb in loader:
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / len(loader):.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Forecast für Validation
+    # ------------------------------------------------------------
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = train_group[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(history_values[-window:], dtype=np.float32).reshape(1, -1)
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = torch.tensor(x_scaled, dtype=torch.float32).unsqueeze(1)
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            # autoregressiv: Prognose wird für nächsten Tag weiterverwendet
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get((r["series_id"], r["day_idx"]), global_fallback),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def lstm_forecast(
+    train_df,
+    val_df,
+    target_col,
+    window=28,
+    epochs=3,
+    batch_size=4096,
+    random_state=42
+):
+    """
+    LSTM Forecast.
+
+    Nutzt pro series_id die letzten `window` Tage als Sequenz
+    und sagt die nächsten Validierungstage autoregressiv voraus.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    # ------------------------------------------------------------
+    # 1. Trainingssequenzen bauen
+    # ------------------------------------------------------------
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    # LSTM erwartet: (batch, sequence_length, features)
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(-1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    # ------------------------------------------------------------
+    # 3. LSTM Modell
+    # ------------------------------------------------------------
+
+    class LSTMForecast(nn.Module):
+        def __init__(self, hidden_size=32, num_layers=1):
+            super().__init__()
+
+            self.lstm = nn.LSTM(
+                input_size=1,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                batch_first=True
+            )
+
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_size, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1)
+            )
+
+        def forward(self, x):
+            # output shape: (batch, seq_len, hidden_size)
+            output, _ = self.lstm(x)
+
+            # letzter Zeitschritt
+            last_output = output[:, -1, :]
+
+            return self.fc(last_output).squeeze(-1)
+
+    model = LSTMForecast(
+        hidden_size=32,
+        num_layers=1
+    ).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("\n=== LSTM Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+        n_batches = 0
+
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / n_batches:.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Forecast für Validation
+    # ------------------------------------------------------------
+
+    predictions = {}
+
+    model.eval()
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+        train_group = train[train["series_id"] == series_id].sort_values("day_idx")
+
+        history_values = (
+            train_group[target_col]
+            .fillna(global_fallback)
+            .values
+            .astype(np.float32)
+            .tolist()
+        )
+
+        for _, row in val_group.sort_values("day_idx").iterrows():
+
+            if len(history_values) >= window:
+                x_input = np.array(
+                    history_values[-window:],
+                    dtype=np.float32
+                ).reshape(1, -1)
+
+                x_scaled = x_scaler.transform(x_input)
+
+                x_tensor = (
+                    torch.tensor(x_scaled, dtype=torch.float32)
+                    .unsqueeze(-1)
+                    .to(device)
+                )
+
+                with torch.no_grad():
+                    pred_scaled = model(x_tensor).cpu().numpy().reshape(-1, 1)
+
+                pred = y_scaler.inverse_transform(pred_scaled)[0, 0]
+
+            else:
+                pred = global_fallback
+
+            pred = max(pred, 0)
+
+            predictions[(series_id, row["day_idx"])] = pred
+
+            # autoregressiv weiterverwenden
+            history_values.append(pred)
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get(
+            (r["series_id"], r["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def lstm_forecast_fast(
+    train_df,
+    val_df,
+    target_col,
+    window=21,
+    epochs=3,
+    batch_size=8192,
+    random_state=42
+):
+    import numpy as np
+    import pandas as pd
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.preprocessing import StandardScaler
+
+    torch.manual_seed(random_state)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
+
+    train = train_df.copy().sort_values(["series_id", "day_idx"])
+    val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
+
+    global_fallback = train[target_col].mean()
+
+    # ------------------------------------------------------------
+    # 1. Trainingssequenzen bauen
+    # ------------------------------------------------------------
+
+    X_list = []
+    y_list = []
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+
+        if len(values) <= window:
+            continue
+
+        for i in range(window, len(values)):
+            X_list.append(values[i-window:i])
+            y_list.append(values[i])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    if len(X) == 0:
+        val_pred["prediction"] = global_fallback
+        return val_pred
+
+    # ------------------------------------------------------------
+    # 2. Skalieren
+    # ------------------------------------------------------------
+
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_scaled = x_scaler.fit_transform(X)
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).ravel()
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(-1)
+    y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
+
+    loader = DataLoader(
+        TensorDataset(X_tensor, y_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    # ------------------------------------------------------------
+    # 3. Kleineres LSTM
+    # ------------------------------------------------------------
+
+    class LSTMForecastFast(nn.Module):
+        def __init__(self, hidden_size=16):
+            super().__init__()
+
+            self.lstm = nn.LSTM(
+                input_size=1,
+                hidden_size=hidden_size,
+                num_layers=1,
+                batch_first=True
+            )
+
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_size, 8),
+                nn.ReLU(),
+                nn.Linear(8, 1)
+            )
+
+        def forward(self, x):
+            output, _ = self.lstm(x)
+            last_output = output[:, -1, :]
+            return self.fc(last_output).squeeze(-1)
+
+    model = LSTMForecastFast(hidden_size=16).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # ------------------------------------------------------------
+    # 4. Training
+    # ------------------------------------------------------------
+
+    print("\n=== Fast LSTM Forecast Training ===")
+    print(f"Training samples: {len(X):,}")
+    print(f"Window: {window}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+
+    model.train()
+
+    for epoch in range(epochs):
+        epoch_loss = 0
+        n_batches = 0
+
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / n_batches:.6f}")
+
+    # ------------------------------------------------------------
+    # 5. Schneller Forecast batchweise
+    # ------------------------------------------------------------
+
+    print("Predicting validation...")
+
+    model.eval()
+
+    predictions = {}
+
+    # pro series_id letzte window Werte holen
+    last_values = {}
+
+    for series_id, g in train.groupby("series_id"):
+        values = g[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+
+        if len(values) < window:
+            values = [global_fallback] * (window - len(values)) + values
+
+        last_values[series_id] = values[-window:]
+
+    val_days = sorted(val_pred["day_idx"].unique())
+
+    for day_idx in val_days:
+        series_ids = val_pred[val_pred["day_idx"] == day_idx]["series_id"].values
+
+        X_pred = np.array(
+            [last_values.get(sid, [global_fallback] * window) for sid in series_ids],
+            dtype=np.float32
+        )
+
+        X_pred_scaled = x_scaler.transform(X_pred)
+
+        X_pred_tensor = (
+            torch.tensor(X_pred_scaled, dtype=torch.float32)
+            .unsqueeze(-1)
+            .to(device)
+        )
+
+        preds_scaled_all = []
+
+        with torch.no_grad():
+            for start in range(0, len(X_pred_tensor), batch_size):
+                end = min(start + batch_size, len(X_pred_tensor))
+
+                pred_scaled = model(X_pred_tensor[start:end])
+                preds_scaled_all.append(pred_scaled.cpu().numpy())
+
+        preds_scaled_all = np.concatenate(preds_scaled_all).reshape(-1, 1)
+        preds = y_scaler.inverse_transform(preds_scaled_all).ravel()
+        preds = np.maximum(preds, 0)
+
+        for sid, pred in zip(series_ids, preds):
+            predictions[(sid, day_idx)] = pred
+
+            hist = last_values.get(sid, [global_fallback] * window)
+            hist = hist[1:] + [float(pred)]
+            last_values[sid] = hist
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda r: predictions.get(
+            (r["series_id"], r["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def catboost_forecast(train_df, val_df, target_col, random_state=42):
+    """
+    CatBoost Forecast.
+
+    Globales Modell über alle series_id.
+    """
+
+    from catboost import CatBoostRegressor
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    # ------------------------------------------------------------
+    # Features
+    # ------------------------------------------------------------
+
+    def add_features(df):
+        df = df.copy()
+
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["month"] = pd.to_datetime(df["dt"]).dt.month
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+
+    combined = add_features(combined)
+
+    train_feat = combined[
+        combined["day_idx"].isin(train["day_idx"])
+    ].copy()
+
+    val_feat = combined[
+        combined["day_idx"].isin(val_pred["day_idx"])
+    ].copy()
+
+    # ------------------------------------------------------------
+    # Features
+    # ------------------------------------------------------------
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "lag1",
+        "lag7",
+        "rolling7",
+        "rolling28",
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    categorical_features = [
+        c for c in [
+            "series_id",
+            "product_id",
+            "store_id",
+            "city_id",
+            "management_group_id",
+            "weekday",
+            "month",
+        ]
+        if c in feature_cols
+    ]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # ------------------------------------------------------------
+    # Modell
+    # ------------------------------------------------------------
+
+    model = CatBoostRegressor(
+        iterations=300,
+        learning_rate=0.05,
+        depth=8,
+        loss_function="RMSE",
+        random_seed=random_state,
+        verbose=False
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        cat_features=categorical_features
+    )
+
+    # ------------------------------------------------------------
+    # Forecast
+    # ------------------------------------------------------------
+
+    val_feat["prediction"] = model.predict(X_val)
+
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def catboost_forecast_fast(train_df, val_df, target_col, random_state=42):
+    from catboost import CatBoostRegressor
+    import pandas as pd
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["weekday"] = pd.to_datetime(df["dt"]).dt.weekday
+        df["month"] = pd.to_datetime(df["dt"]).dt.month
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag7"] = grp.shift(7)
+
+        df["rolling7"] = (
+            grp.shift(1).rolling(7, min_periods=1).mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1).rolling(28, min_periods=1).mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0).sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id", "product_id", "store_id", "city_id",
+        "management_group_id", "weekday", "month", "day_idx",
+        "discount", "holiday_flag", "activity_flag",
+        "avg_temperature", "avg_humidity", "avg_wind_level",
+        "precpt", "lag1", "lag7", "rolling7", "rolling28", "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    cat_features = [
+        c for c in [
+            "series_id", "product_id", "store_id",
+            "city_id", "management_group_id",
+            "weekday", "month"
+        ]
+        if c in feature_cols
+    ]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = CatBoostRegressor(
+        iterations=100,
+        learning_rate=0.1,
+        depth=6,
+        loss_function="RMSE",
+        random_seed=random_state,
+        thread_count=-1,
+        verbose=False,
+        allow_writing_files=False
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        cat_features=cat_features
+    )
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
+    from catboost import CatBoostRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        df["lag1"] = grp.shift(1)
+        df["lag2"] = grp.shift(2)
+        df["lag3"] = grp.shift(3)
+        df["lag7"] = grp.shift(7)
+        df["lag14"] = grp.shift(14)
+        df["lag28"] = grp.shift(28)
+
+        df["rolling7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling14"] = (
+            grp.shift(1)
+            .rolling(14, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std7"] = (
+            grp.shift(1)
+            .rolling(7, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["rolling_std28"] = (
+            grp.shift(1)
+            .rolling(28, min_periods=2)
+            .std()
+            .reset_index(level=0, drop=True)
+        )
+
+        df["diff1"] = df["lag1"] - df["lag2"]
+        df["diff7"] = df["lag7"] - df["lag14"]
+
+        df["ratio_lag1_rolling7"] = df["lag1"] / (df["rolling7"] + 1e-6)
+        df["ratio_lag7_rolling28"] = df["lag7"] / (df["rolling28"] + 1e-6)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "lag1",
+        "lag2",
+        "lag3",
+        "lag7",
+        "lag14",
+        "lag28",
+
+        "rolling7",
+        "rolling14",
+        "rolling28",
+        "rolling_std7",
+        "rolling_std28",
+
+        "diff1",
+        "diff7",
+        "ratio_lag1_rolling7",
+        "ratio_lag7_rolling28",
+
+        "psd",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    cat_features = [
+        c for c in [
+            "series_id",
+            "product_id",
+            "store_id",
+            "city_id",
+            "management_group_id",
+            "weekday",
+            "month",
+            "week_of_year",
+            "is_weekend",
+        ]
+        if c in feature_cols
+    ]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = CatBoostRegressor(
+        iterations=300,
+        learning_rate=0.05,
+        depth=8,
+        l2_leaf_reg=5,
+        bootstrap_type="Bernoulli",
+        subsample=0.8,
+        loss_function="RMSE",
+        random_seed=random_state,
+        thread_count=-1,
+        verbose=False,
+        allow_writing_files=False
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        cat_features=cat_features
+    )
+
+    val_feat["prediction"] = model.predict(X_val)
     val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
 
     return val_feat
