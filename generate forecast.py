@@ -45,75 +45,30 @@ forecast_models = {
     #"seasonal_naive_forecast": forecast.seasonal_naive,
     #"rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
-    "double_exponential_smoothing": forecast.double_exponential_smoothing,
-    "triple_exponential_smoothing": forecast.triple_exponential_smoothing,
+    #"double_exponential_smoothing": forecast.double_exponential_smoothing,
+    #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
     #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
-    #"arima_forecast": forecast.arima, # TODO lädt zu lange -> optimieren
+    "arima_forecast": forecast.arima, # TODO lädt zu lange -> optimieren
     #"lightgbm_forecast": forecast.lightgbm_forecast,
     #"xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
     #"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
-    #"cnn_forecast": forecast.cnn_forecast, # TODO Training samples: 2,750,000
-        # Window: 28
-        # Epochs: 5
-        # Epoch 1/5 - Loss: 0.241519
-        # Epoch 2/5 - Loss: 0.202200
-        # Epoch 3/5 - Loss: 0.189820
-        # Epoch 4/5 - Loss: 0.186992
-        # Epoch 5/5 - Loss: 0.183760
-        # Finished: raw_sales + cnn_forecast (0:27:36.176654)
-    #"cnn_forecast_fast": forecast.cnn_forecast_fast, # TODO Training samples: 3,100,000
-        # Window: 21
-        # Epochs: 3
-        # Batch size: 16384
-        # Epoch 1/3 - Loss: 0.301544
-        # Epoch 2/3 - Loss: 0.232282
-        # Epoch 3/3 - Loss: 0.226754
-        # Finished: raw_sales + cnn_forecast_fast (0:14:35.852208)
-    #"cnn_forecast_balanced": forecast.cnn_forecast_balanced, # TODO Training samples: 2,750,000
-        # Window: 28
-        # Epochs: 3
-        # Batch size: 16384
-        # Epoch 1/3 - Loss: 0.318309
-        # Epoch 2/3 - Loss: 0.230634
-        # Epoch 3/3 - Loss: 0.213261
-        # Finished: raw_sales + cnn_forecast_balanced (0:15:26.532638)
-    #"cnn_forecast_3epochs": forecast.cnn_forecast_3epochs, # TODO Training samples: 2,750,000
-        # Window: 28
-        # Epochs: 3
-        # Batch size: 16384
-        # Epoch 1/3 - Loss: 0.291431
-        # Epoch 2/3 - Loss: 0.226947
-        # Epoch 3/3 - Loss: 0.216623
-        # Finished: raw_sales + cnn_forecast_3epochs (0:16:38.939091)
-    #"cnn_forecast_original_3epochs": forecast.cnn_forecast_original_3epochs, # TODO Training samples: 2,750,000
-        # Window: 28
-        # Epochs: 3
-        # Epoch 1/3 - Loss: 0.241519
-        # Epoch 2/3 - Loss: 0.202200
-        # Epoch 3/3 - Loss: 0.189820
-        # Finished: raw_sales + cnn_forecast_original_3epochs (0:16:49.105764)
-    #"lstm_forecast": forecast.lstm_forecast, # TODO Training samples: 2,750,000
-        # Window: 28
-        # Epochs: 3
-        # Batch size: 4096
-        # Epoch 1/3 - Loss: 0.265970
-        # Epoch 2/3 - Loss: 0.184966
-        # Epoch 3/3 - Loss: 0.168801
-        # Finished: raw_sales + lstm_forecast (0:25:00.256761)
+    #"cnn_forecast": forecast.cnn_forecast,
+    #"cnn_forecast_fast": forecast.cnn_forecast_fast,
+    #"cnn_forecast_balanced": forecast.cnn_forecast_balanced,
+    #"cnn_forecast_3epochs": forecast.cnn_forecast_3epochs,
+    #"cnn_forecast_original_3epochs": forecast.cnn_forecast_original_3epochs,
+    #"lstm_forecast": forecast.lstm_forecast,
     #"lstm_forecast_fast": forecast.lstm_forecast_fast, 
-    #"catboost_forecast": forecast.catboost_forecast, # TODO Run: raw_sales + catboost_forecast
-        # Finished: raw_sales + catboost_forecast (0:26:24.784278)
+    #"catboost_forecast": forecast.catboost_forecast, # TODO Potenzial
     #"catboost_forecast_fast": forecast.catboost_forecast_fast,
-    #"catboost_forecast_optimized": forecast.catboost_forecast_optimized, # TODO Run: raw_sales + catboost_forecast_optimized
-        # Finished: raw_sales + catboost_forecast_optimized (0:29:31.443697)
+    #"catboost_forecast_optimized": forecast.catboost_forecast_optimized,
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
-    #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized,
-    #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Run: raw_sales + xgboost_forecast_feature_optimized
-        # Finished: raw_sales + xgboost_forecast_feature_optimized (0:30:48.924779)
+    #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
+    #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
     #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
     }
 
