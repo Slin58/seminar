@@ -516,6 +516,132 @@ def arima(train_df, val_df, target_col, order=(1, 1, 1)):
 
     return val_pred
 
+def arima_like_fast(train_df, val_df, target_col, order=(1, 1, 0)):
+    """
+    Fast ARIMA-like Forecast pro series_id.
+
+    Idee:
+    - Kein echtes ARIMA-Fitting für jede series_id.
+    - Nutzt ARIMA(1,1,0)-ähnliche Logik:
+        Prognose = letzter Wert + geglätteter letzter Trend
+    - Sehr viel schneller als statsmodels ARIMA.
+    """
+
+    import numpy as np
+    import pandas as pd
+
+    val_pred = val_df.copy()
+
+    global_fallback = train_df[target_col].mean()
+    series_mean = train_df.groupby("series_id")[target_col].mean()
+
+    predictions = {}
+
+    for series_id, val_group in val_pred.groupby("series_id"):
+
+        train_group = train_df[
+            train_df["series_id"] == series_id
+        ].sort_values("day_idx")
+
+        val_days = val_group["day_idx"].sort_values().values
+
+        if train_group.empty:
+            forecast_values = np.full(len(val_days), global_fallback)
+        else:
+            y = train_group[target_col].astype(float).values
+            train_max_day = train_group["day_idx"].max()
+
+            if len(y) >= 2:
+                last_value = y[-1]
+
+                diffs = np.diff(y)
+
+                # robuster Trend aus letzten Tagen
+                recent_trend = np.nanmean(diffs[-7:]) if len(diffs) >= 7 else np.nanmean(diffs)
+
+                if np.isnan(recent_trend):
+                    recent_trend = 0.0
+
+                forecast_values = []
+
+                for day_idx in val_days:
+                    step = int(day_idx - train_max_day)
+
+                    pred = last_value + step * recent_trend
+
+                    forecast_values.append(pred)
+
+                forecast_values = np.array(forecast_values)
+
+            elif len(y) == 1:
+                forecast_values = np.full(len(val_days), y[-1])
+            else:
+                forecast_values = np.full(
+                    len(val_days),
+                    series_mean.get(series_id, global_fallback)
+                )
+
+        for day_idx, pred in zip(val_days, forecast_values):
+            predictions[(series_id, day_idx)] = pred
+
+    val_pred["prediction"] = val_pred.apply(
+        lambda row: predictions.get(
+            (row["series_id"], row["day_idx"]),
+            global_fallback
+        ),
+        axis=1
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
+def arima_like_fast_vectorized(train_df, val_df, target_col):
+    import numpy as np
+    import pandas as pd
+
+    train = train_df.sort_values(["series_id", "day_idx"]).copy()
+    val_pred = val_df.copy()
+
+    global_fallback = train[target_col].mean()
+
+    last = train.groupby("series_id").tail(1)[
+        ["series_id", "day_idx", target_col]
+    ].rename(columns={
+        "day_idx": "train_max_day",
+        target_col: "last_value"
+    })
+
+    train["diff"] = train.groupby("series_id")[target_col].diff()
+
+    trend = (
+        train.groupby("series_id")["diff"]
+        .tail(7)
+        .groupby(train["series_id"])
+        .mean()
+        .reset_index()
+        .rename(columns={"diff": "recent_trend"})
+    )
+
+    val_pred = val_pred.merge(last, on="series_id", how="left")
+    val_pred = val_pred.merge(trend, on="series_id", how="left")
+
+    val_pred["last_value"] = val_pred["last_value"].fillna(global_fallback)
+    val_pred["recent_trend"] = val_pred["recent_trend"].fillna(0)
+
+    val_pred["step"] = val_pred["day_idx"] - val_pred["train_max_day"]
+
+    val_pred["prediction"] = (
+        val_pred["last_value"] +
+        val_pred["step"] * val_pred["recent_trend"]
+    )
+
+    val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
+    val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
+
+    return val_pred
+
 def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
     """
     LightGBM Forecast.
@@ -917,6 +1043,193 @@ def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_sta
 
         n_estimators=700,
         learning_rate=0.03,
+
+        num_leaves=63,
+        max_depth=10,
+        min_child_samples=30,
+
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+
+        reg_alpha=0.5,
+        reg_lambda=1.0,
+
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_state=42):
+    import lightgbm as lgb
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+
+        grp = df.groupby("series_id")[target_col]
+
+        lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+
+        for lag in lags:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        windows = [3, 7, 14, 21, 28]
+
+        for w in windows:
+            df[f"roll_mean_{w}"] = (
+                shifted.rolling(w, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_std_{w}"] = (
+                shifted.rolling(w, min_periods=2)
+                .std()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_min_{w}"] = (
+                shifted.rolling(w, min_periods=1)
+                .min()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_max_{w}"] = (
+                shifted.rolling(w, min_periods=1)
+                .max()
+                .reset_index(level=0, drop=True)
+            )
+
+            df[f"roll_median_{w}"] = (
+                shifted.rolling(w, min_periods=1)
+                .median()
+                .reset_index(level=0, drop=True)
+            )
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "weekday_sin",
+        "weekday_cos",
+        "month_sin",
+        "month_cos",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "psd",
+    ]
+
+    feature_cols += [
+        f"lag_{lag}"
+        for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+    ]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "trend_ratio_7",
+        "trend_ratio_14",
+        "trend_ratio_28",
+        "lag1_roll7",
+        "lag1_roll28",
+        "lag7_roll7",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = lgb.LGBMRegressor(
+        objective="regression_l1",
+        boosting_type="gbdt",
+
+        n_estimators=900,
+        learning_rate=0.025,
 
         num_leaves=63,
         max_depth=10,

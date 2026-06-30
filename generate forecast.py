@@ -50,7 +50,9 @@ forecast_models = {
     #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
-    "arima_forecast": forecast.arima, # TODO lädt zu lange -> optimieren
+    #"arima_forecast": forecast.arima, # TODO lädt zu lange -> optimieren
+    #"arima_like_fast": forecast.arima_like_fast,
+    #"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
     #"lightgbm_forecast": forecast.lightgbm_forecast,
     #"xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
@@ -68,6 +70,7 @@ forecast_models = {
     #"catboost_forecast_optimized": forecast.catboost_forecast_optimized,
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
+    "lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
     #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
     #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
     }
