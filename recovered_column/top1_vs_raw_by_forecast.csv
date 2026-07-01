@@ -1,4 +1,12 @@
 forecast_method,type,recovery,wape_overall,wape_low_sale,wape_high_sale,harmonic_mean,scored_rows
+lightgbm_forecast_feature_optimized_v3,top1 recovery,stl_real,0.2754,0.3423,0.2236,0.2721,198987.0
+lightgbm_forecast_feature_optimized_v3,raw_sales,raw_sales,0.2879,0.3521,0.2383,0.2854,198987.0
+lightgbm_forecast_feature_optimized_v4,top1 recovery,stl_real,0.2755,0.3419,0.2241,0.2723,198987.0
+lightgbm_forecast_feature_optimized_v4,raw_sales,raw_sales,0.2886,0.3532,0.2387,0.2861,198987.0
+lightgbm_forecast_feature_optimized_v6_feature_selection,top1 recovery,stl_real,0.2761,0.3426,0.2246,0.2729,198987.0
+lightgbm_forecast_feature_optimized_v6_feature_selection,raw_sales,raw_sales,0.2882,0.3521,0.2388,0.2857,198987.0
+lightgbm_forecast_feature_optimized_v5,top1 recovery,stl_real,0.276,0.342,0.225,0.273,198987.0
+lightgbm_forecast_feature_optimized_v5,raw_sales,raw_sales,0.2887,0.3528,0.2392,0.2863,198987.0
 lightgbm_forecast_feature_optimized,top1 recovery,stl_real,0.2766,0.3442,0.2243,0.2733,198987.0
 lightgbm_forecast_feature_optimized,raw_sales,raw_sales,0.2904,0.355,0.2404,0.2879,198987.0
 lightgbm_forecast_feature_optimized_v2,top1 recovery,stl_real,0.2766,0.3437,0.2247,0.2734,198987.0
