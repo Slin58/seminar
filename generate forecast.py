@@ -69,23 +69,26 @@ forecast_models = {
     #"catboost_forecast_fast": forecast.catboost_forecast_fast,
     #"catboost_forecast_optimized": forecast.catboost_forecast_optimized,
     #"catboost_forecast_optimized_v2": forecast.catboost_forecast_optimized_v2, # lädt zu lange
-    "catboost_forecast_fast_numeric_v2": forecast.catboost_forecast_fast_numeric_v2,
+    #"catboost_forecast_fast_numeric_v2": forecast.catboost_forecast_fast_numeric_v2,
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
-    #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3,
+    "lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
     #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
         # infos siehe dokument
     #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
     #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
+    #"hist_gradient_boosting_forecast": forecast.hist_gradient_boosting_forecast,
+    #"hist_gradient_boosting_forecast_optimized": forecast.hist_gradient_boosting_forecast_optimized, # TODO Potenzial
+    #"extra_trees_forecast": forecast.extra_trees_forecast,
     }
 
 # TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
 # LSTM, catboost, cnn
 
-recovery_models = ["recovered_daily_sales_stl_real", "sale_amount"] # if list empty all recovery methods are used
+recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm"] # if list empty all recovery methods are used
 
 # ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen

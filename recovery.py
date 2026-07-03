@@ -918,6 +918,202 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
     print(f"Mean recovered sales: {history['recovered_daily_sales_lightgbm'].mean():.4f}")
     print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
+def lightgbm_v2(history, op_sales_masked, outside_slice,
+                max_train_rows=1_500_000,
+                batch_size=500_000,
+                random_state=42):
+
+    import time
+    import numpy as np
+    import pandas as pd
+    import lightgbm as lgb
+
+    print("\n=== LightGBM Recovery v2 ===")
+
+    start_total = time.time()
+
+    imputed = op_sales_masked.copy()
+    imputed_count = np.isnan(imputed).sum()
+
+    print(f"Matrix shape: {imputed.shape}")
+    print(f"Missing values: {imputed_count:,}")
+
+    # ------------------------------------------------------------
+    # Kontext-Features pro Tageszeile
+    # ------------------------------------------------------------
+    dt = pd.to_datetime(history["dt"])
+
+    visible_sum = np.nansum(op_sales_masked, axis=1)
+    visible_count = np.sum(~np.isnan(op_sales_masked), axis=1)
+    visible_mean = visible_sum / np.maximum(visible_count, 1)
+
+    daily_raw = history["sale_amount"].values if "sale_amount" in history.columns else np.zeros(len(history))
+
+    base = pd.DataFrame({
+        "series_id": history["series_id"].values,
+        "day_idx": history["day_idx"].values,
+        "weekday": dt.dt.weekday.values,
+        "month": dt.dt.month.values,
+        "discount": history["discount"].values,
+        "holiday_flag": history["holiday_flag"].values,
+        "activity_flag": history["activity_flag"].values,
+        "avg_temperature": history["avg_temperature"].fillna(0).values,
+        "avg_humidity": history["avg_humidity"].fillna(0).values,
+        "avg_wind_level": history["avg_wind_level"].fillna(0).values,
+        "precpt": history["precpt"].fillna(0).values,
+        "outside_slice": outside_slice,
+        "visible_sum": visible_sum,
+        "visible_count": visible_count,
+        "visible_mean": visible_mean,
+        "daily_raw": daily_raw,
+    })
+
+    optional_cols = [
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "psd",
+    ]
+
+    for col in optional_cols:
+        if col in history.columns:
+            base[col] = history[col].values
+
+    base["weekday_sin"] = np.sin(2 * np.pi * base["weekday"] / 7)
+    base["weekday_cos"] = np.cos(2 * np.pi * base["weekday"] / 7)
+    base["month_sin"] = np.sin(2 * np.pi * base["month"] / 12)
+    base["month_cos"] = np.cos(2 * np.pi * base["month"] / 12)
+
+    # ------------------------------------------------------------
+    # Helper: Feature-Matrix bauen
+    # ------------------------------------------------------------
+    def build_X(rows, hours):
+        X = base.iloc[rows].reset_index(drop=True).copy()
+
+        X["hour"] = hours
+        X["hour_sin"] = np.sin(2 * np.pi * X["hour"] / 24)
+        X["hour_cos"] = np.cos(2 * np.pi * X["hour"] / 24)
+
+        X["is_morning"] = ((X["hour"] >= 6) & (X["hour"] < 11)).astype(int)
+        X["is_noon"] = ((X["hour"] >= 11) & (X["hour"] < 14)).astype(int)
+        X["is_afternoon"] = ((X["hour"] >= 14) & (X["hour"] < 18)).astype(int)
+        X["is_evening"] = ((X["hour"] >= 18) & (X["hour"] < 22)).astype(int)
+
+        X["discount_x_hour"] = X["discount"] * X["hour"]
+        X["holiday_x_hour"] = X["holiday_flag"] * X["hour"]
+        X["activity_x_hour"] = X["activity_flag"] * X["hour"]
+
+        return X
+
+    # ------------------------------------------------------------
+    # Trainingsdaten: nur sichtbare Stunden
+    # ------------------------------------------------------------
+    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+    y_obs = imputed[rows_obs, hours_obs]
+
+    print(f"Visible training rows: {len(rows_obs):,}")
+
+    if len(rows_obs) > max_train_rows:
+        rng = np.random.default_rng(random_state)
+        sample_idx = rng.choice(len(rows_obs), size=max_train_rows, replace=False)
+
+        rows_train = rows_obs[sample_idx]
+        hours_train = hours_obs[sample_idx]
+        y_train = y_obs[sample_idx]
+    else:
+        rows_train = rows_obs
+        hours_train = hours_obs
+        y_train = y_obs
+
+    X_train = build_X(rows_train, hours_train)
+
+    print(f"Training rows used: {len(X_train):,}")
+
+    # stärkere Gewichtung hoher Verkäufe
+    sample_weight = np.sqrt(y_train + 1)
+
+    # ------------------------------------------------------------
+    # Modell
+    # ------------------------------------------------------------
+    model = lgb.LGBMRegressor(
+        objective="regression_l1",
+        boosting_type="gbdt",
+
+        n_estimators=700,
+        learning_rate=0.035,
+
+        num_leaves=127,
+        max_depth=12,
+        min_child_samples=40,
+
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+
+        reg_alpha=0.5,
+        reg_lambda=1.5,
+
+        n_jobs=-1,
+        random_state=random_state,
+        verbosity=-1
+    )
+
+    print("Training LightGBM v2...")
+    start_fit = time.time()
+
+    model.fit(
+        X_train,
+        y_train,
+        sample_weight=sample_weight
+    )
+
+    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # Missing Values vorhersagen
+    # ------------------------------------------------------------
+    rows_miss, hours_miss = np.where(np.isnan(imputed))
+
+    print(f"Predicting missing rows: {len(rows_miss):,}")
+
+    start_pred = time.time()
+
+    for start in range(0, len(rows_miss), batch_size):
+        end = min(start + batch_size, len(rows_miss))
+
+        print(f"Predicting batch {start:,} to {end:,}")
+
+        batch_rows = rows_miss[start:end]
+        batch_hours = hours_miss[start:end]
+
+        X_missing = build_X(batch_rows, batch_hours)
+
+        preds = model.predict(X_missing)
+        preds = np.clip(preds, 0, None)
+
+        imputed[batch_rows, batch_hours] = preds
+
+    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+
+    # ------------------------------------------------------------
+    # Daily Sales rekonstruieren
+    # ------------------------------------------------------------
+    imputed = np.maximum(imputed, 0)
+
+    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_lightgbm_v2"] = recovered_daily
+
+    print("\n=== LightGBM Recovery v2 Finished ===")
+    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_lightgbm_v2'].mean():.4f}")
+    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
+
 def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
 
     print("\n=== XGBoost Recovery ===")

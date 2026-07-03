@@ -4652,6 +4652,449 @@ def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state
 
     return val_feat
 
+def hist_gradient_boosting_forecast(train_df, val_df, target_col, random_state=42):
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+
+        for lag in lags:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 21, 28]:
+            df[f"roll_mean_{w}"] = shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+            df[f"roll_std_{w}"] = shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True)
+            df[f"roll_min_{w}"] = shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True)
+            df[f"roll_max_{w}"] = shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True)
+            df[f"roll_median_{w}"] = shifted.rolling(w, min_periods=1).median().reset_index(level=0, drop=True)
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "weekday_sin",
+        "weekday_cos",
+        "month_sin",
+        "month_cos",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "psd",
+    ]
+
+    feature_cols += [
+        f"lag_{lag}"
+        for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+    ]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "trend_ratio_7",
+        "trend_ratio_14",
+        "trend_ratio_28",
+        "lag1_roll7",
+        "lag1_roll28",
+        "lag7_roll7",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = HistGradientBoostingRegressor(
+        loss="absolute_error",
+
+        max_iter=400,
+        learning_rate=0.05,
+
+        max_leaf_nodes=63,
+        max_depth=10,
+        min_samples_leaf=30,
+
+        l2_regularization=1.0,
+
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def hist_gradient_boosting_forecast_optimized(train_df, val_df, target_col, random_state=42):
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        lags = [1,2,3,4,5,6,7,8,9,10,14,21,28,35,42,56]
+
+        for lag in lags:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 21, 28]:
+            df[f"roll_mean_{w}"] = shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+            df[f"roll_std_{w}"] = shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True)
+            df[f"roll_min_{w}"] = shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True)
+            df[f"roll_max_{w}"] = shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True)
+            df[f"roll_median_{w}"] = shifted.rolling(w, min_periods=1).median().reset_index(level=0, drop=True)
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "weekday_sin",
+        "weekday_cos",
+        "month_sin",
+        "month_cos",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "psd",
+    ]
+
+    feature_cols += [f"lag_{lag}" for lag in [1,2,3,4,5,6,7,8,9,10,14,21,28,35,42,56]]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "trend_ratio_7",
+        "trend_ratio_14",
+        "trend_ratio_28",
+        "lag1_roll7",
+        "lag1_roll28",
+        "lag7_roll7",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = HistGradientBoostingRegressor(
+        loss="absolute_error",
+
+        max_iter=700,
+        learning_rate=0.035,
+
+        max_leaf_nodes=127,
+        max_depth=12,
+        min_samples_leaf=25,
+
+        l2_regularization=0.5,
+
+        max_bins=255,
+
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
+    from sklearn.ensemble import ExtraTreesRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+
+        df["weekday_sin"] = np.sin(2 * np.pi * df["weekday"] / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * df["weekday"] / 7)
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+
+        for lag in lags:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 21, 28]:
+            df[f"roll_mean_{w}"] = shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+            df[f"roll_std_{w}"] = shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True)
+            df[f"roll_min_{w}"] = shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True)
+            df[f"roll_max_{w}"] = shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True)
+            df[f"roll_median_{w}"] = shifted.rolling(w, min_periods=1).median().reset_index(level=0, drop=True)
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["trend_ratio_7"] = df["lag_1"] / (df["lag_7"] + 1)
+        df["trend_ratio_14"] = df["lag_1"] / (df["lag_14"] + 1)
+        df["trend_ratio_28"] = df["lag_1"] / (df["lag_28"] + 1)
+
+        df["lag1_roll7"] = df["lag_1"] * df["roll_mean_7"]
+        df["lag1_roll28"] = df["lag_1"] * df["roll_mean_28"]
+        df["lag7_roll7"] = df["lag_7"] * df["roll_mean_7"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "series_id",
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+
+        "weekday",
+        "month",
+        "week_of_year",
+        "is_weekend",
+        "weekday_sin",
+        "weekday_cos",
+        "month_sin",
+        "month_cos",
+        "day_idx",
+
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+
+        "psd",
+    ]
+
+    feature_cols += [
+        f"lag_{lag}"
+        for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
+    ]
+
+    for w in [3, 7, 14, 21, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+            f"roll_median_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "trend_ratio_7",
+        "trend_ratio_14",
+        "trend_ratio_28",
+        "lag1_roll7",
+        "lag1_roll28",
+        "lag7_roll7",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    model = ExtraTreesRegressor(
+        n_estimators=150,
+        max_depth=18,
+        min_samples_leaf=20,
+        max_features="sqrt",
+        bootstrap=False,
+        n_jobs=-1,
+        random_state=random_state,
+        verbose=1
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
 # TODO 
 # Exponential Smoothing (Siehe oben) (Nils)
 # DLinear (Nils)
