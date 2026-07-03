@@ -68,6 +68,8 @@ forecast_models = {
     #"catboost_forecast": forecast.catboost_forecast, # TODO Potenzial
     #"catboost_forecast_fast": forecast.catboost_forecast_fast,
     #"catboost_forecast_optimized": forecast.catboost_forecast_optimized,
+    #"catboost_forecast_optimized_v2": forecast.catboost_forecast_optimized_v2, # lädt zu lange
+    "catboost_forecast_fast_numeric_v2": forecast.catboost_forecast_fast_numeric_v2,
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,

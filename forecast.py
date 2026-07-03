@@ -4395,6 +4395,263 @@ def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
+def catboost_forecast_optimized_v2(train_df, val_df, target_col, random_state=42):
+    from catboost import CatBoostRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 28]:
+            df[f"roll_mean_{w}"] = shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+            df[f"roll_std_{w}"] = shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True)
+            df[f"roll_min_{w}"] = shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True)
+            df[f"roll_max_{w}"] = shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True)
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0).sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "week_of_year",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "psd",
+    ]
+
+    feature_cols += [
+        f"lag_{lag}"
+        for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]
+    ]
+
+    for w in [3, 7, 14, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    cat_features = [
+        c for c in [
+            "product_id",
+            "store_id",
+            "city_id",
+            "management_group_id",
+            "weekday",
+            "month",
+            "week_of_year",
+            "holiday_flag",
+            "activity_flag",
+        ]
+        if c in feature_cols
+    ]
+
+    model = CatBoostRegressor(
+        loss_function="MAE",
+        eval_metric="MAE",
+        iterations=500,
+        learning_rate=0.06,
+        depth=8,
+        l2_leaf_reg=8,
+        random_strength=1.5,
+        bagging_temperature=0.5,
+        border_count=128,
+        thread_count=-1,
+        random_seed=random_state,
+        verbose=False,
+        allow_writing_files=False
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        cat_features=cat_features
+    )
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
+def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state=42):
+    from catboost import CatBoostRegressor
+    import pandas as pd
+    import numpy as np
+
+    train = train_df.copy()
+    val_pred = val_df.copy()
+
+    def add_features(df):
+        df = df.copy()
+        df["dt"] = pd.to_datetime(df["dt"])
+
+        df["weekday"] = df["dt"].dt.weekday
+        df["month"] = df["dt"].dt.month
+        df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
+
+        df = df.sort_values(["series_id", "day_idx"])
+        grp = df.groupby("series_id")[target_col]
+
+        for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]:
+            df[f"lag_{lag}"] = grp.shift(lag)
+
+        shifted = grp.shift(1)
+
+        for w in [3, 7, 14, 28]:
+            df[f"roll_mean_{w}"] = shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+            df[f"roll_std_{w}"] = shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True)
+            df[f"roll_min_{w}"] = shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True)
+            df[f"roll_max_{w}"] = shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True)
+
+        df["trend_7"] = df["lag_1"] - df["lag_7"]
+        df["trend_14"] = df["lag_1"] - df["lag_14"]
+        df["trend_28"] = df["lag_1"] - df["lag_28"]
+
+        df["ratio_roll7"] = df["lag_1"] / (df["roll_mean_7"] + 1)
+        df["ratio_roll28"] = df["lag_1"] / (df["roll_mean_28"] + 1)
+
+        return df
+
+    combined = pd.concat([train, val_pred], axis=0)
+    combined = combined.sort_values(["series_id", "day_idx"])
+    combined = add_features(combined)
+
+    train_feat = combined[combined["day_idx"].isin(train["day_idx"])].copy()
+    val_feat = combined[combined["day_idx"].isin(val_pred["day_idx"])].copy()
+
+    feature_cols = [
+        "product_id",
+        "store_id",
+        "city_id",
+        "management_group_id",
+        "weekday",
+        "month",
+        "week_of_year",
+        "day_idx",
+        "discount",
+        "holiday_flag",
+        "activity_flag",
+        "avg_temperature",
+        "avg_humidity",
+        "avg_wind_level",
+        "precpt",
+        "psd",
+    ]
+
+    feature_cols += [
+        f"lag_{lag}"
+        for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]
+    ]
+
+    for w in [3, 7, 14, 28]:
+        feature_cols += [
+            f"roll_mean_{w}",
+            f"roll_std_{w}",
+            f"roll_min_{w}",
+            f"roll_max_{w}",
+        ]
+
+    feature_cols += [
+        "trend_7",
+        "trend_14",
+        "trend_28",
+        "ratio_roll7",
+        "ratio_roll28",
+    ]
+
+    feature_cols = [c for c in feature_cols if c in train_feat.columns]
+
+    global_fallback = train[target_col].mean()
+
+    X_train = train_feat[feature_cols].fillna(0)
+    y_train = train_feat[target_col].fillna(global_fallback)
+    X_val = val_feat[feature_cols].fillna(0)
+
+    # Wichtig:
+    # Keine cat_features übergeben.
+    # CatBoost behandelt alles numerisch -> viel schneller.
+    model = CatBoostRegressor(
+        loss_function="MAE",
+        eval_metric="MAE",
+
+        iterations=300,
+        learning_rate=0.08,
+        depth=6,
+
+        l2_leaf_reg=10,
+        random_strength=2.0,
+        bagging_temperature=0.3,
+
+        thread_count=-1,
+        random_seed=random_state,
+        verbose=100,
+        allow_writing_files=False
+    )
+
+    model.fit(X_train, y_train)
+
+    val_feat["prediction"] = model.predict(X_val)
+    val_feat["prediction"] = val_feat["prediction"].clip(lower=0)
+
+    return val_feat
+
 # TODO 
 # Exponential Smoothing (Siehe oben) (Nils)
 # DLinear (Nils)
