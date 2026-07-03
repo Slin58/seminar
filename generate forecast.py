@@ -74,7 +74,7 @@ forecast_models = {
     #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3,
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
-    "lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
+    #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
         # infos siehe dokument
     #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
     #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,

@@ -21,7 +21,7 @@ from sklearn.model_selection import train_test_split
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 
 from statsmodels.tsa.statespace.structural import UnobservedComponents
 from statsmodels.tsa.seasonal import STL
@@ -1801,7 +1801,7 @@ def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_si
     # ------------------------------------------------------------
 
     class Transformer(nn.Module):
-        def __init__(self, seq_len=16, d_model=32, nhead=4, num_layers=2):
+        def __init__(self, seq_len=24, d_model=32, nhead=4, num_layers=2):
             super().__init__()
 
             self.input_proj = nn.Linear(1, d_model)
@@ -1813,12 +1813,12 @@ def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_si
             self.output_proj = nn.Linear(d_model, 1)
 
         def forward(self, x):
-            # x shape: (batch, 16)
-            x = x.unsqueeze(-1)          # (batch, 16, 1)
-            x = self.input_proj(x)       # (batch, 16, d_model)
-            x = self.encoder(x)          # (batch, 16, d_model)
-            x = self.output_proj(x)      # (batch, 16, 1)
-            return x.squeeze(-1)         # (batch, 16)
+            # x shape: (batch, 24)
+            x = x.unsqueeze(-1)          # (batch, 24, 1)
+            x = self.input_proj(x)       # (batch, 24, d_model)
+            x = self.encoder(x)          # (batch, 24, d_model)
+            x = self.output_proj(x)      # (batch, 24, 1)
+            return x.squeeze(-1)         # (batch, 24)
 
     model = Transformer(seq_len=imputed.shape[1])
 
@@ -2564,3 +2564,264 @@ def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_
 
 # TODO 
 # DLinear (Nils)
+
+class MovingAvg(nn.Module):
+    """
+    Moving average block to highlight the trend component.
+    """
+
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.avg = nn.AvgPool1d(
+            kernel_size=kernel_size,
+            stride=1,
+            padding=0
+        )
+
+    def forward(self, x):
+        # x: (batch, seq_len)
+
+        pad = (self.kernel_size - 1) // 2
+
+        front = x[:, 0:1].repeat(1, pad)
+        end = x[:, -1:].repeat(1, pad)
+
+        x = torch.cat([front, x, end], dim=1)
+
+        x = self.avg(x.unsqueeze(1)).squeeze(1)
+
+        return x
+
+class SeriesDecomp(nn.Module):
+
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.moving_avg = MovingAvg(kernel_size)
+
+    def forward(self, x):
+
+        trend = self.moving_avg(x)
+
+        seasonal = x - trend
+
+        return seasonal, trend
+
+class DLinear(nn.Module):
+
+    def __init__(self, seq_len=16, individual=False, kernel_size=5):
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.individual = individual
+
+        self.decomposition = SeriesDecomp(kernel_size)
+
+        if individual:
+
+            self.linear_seasonal = nn.ModuleList([nn.Linear(seq_len, seq_len)])
+
+            self.linear_trend = nn.ModuleList([nn.Linear(seq_len, seq_len)])
+
+        else:
+
+            self.linear_seasonal = nn.Linear(seq_len, seq_len)
+
+            self.linear_trend = nn.Linear(seq_len, seq_len)
+
+    def forward(self, x):
+        """
+        x shape = (batch, 16)
+        """
+
+        seasonal, trend = self.decomposition(x)
+
+        if self.individual:
+
+            seasonal = self.linear_seasonal[0](seasonal)
+            trend = self.linear_trend[0](trend)
+
+        else:
+
+            seasonal = self.linear_seasonal(seasonal)
+            trend = self.linear_trend(trend)
+
+        out = seasonal + trend
+
+        return out
+    
+class RecoveryDataset(Dataset):
+    """
+    Creates training samples for demand recovery.
+
+    Input  : hourly sales with randomly masked hours
+    Target : original hourly sales
+
+    Parameters
+    ----------
+    hourly_sales : ndarray (n_days, 16)
+        Complete hourly sales (no NaNs).
+    mask_prob : float
+        Probability that an observed hour is hidden.
+    """
+
+    def __init__(self, hourly_sales, mask_prob=0.30, keep_min_hours=8,):
+
+        self.hourly_sales = hourly_sales.astype(np.float32)
+        self.mask_prob = mask_prob
+        self.keep_min_hours = keep_min_hours
+
+    def __len__(self):
+        return len(self.hourly_sales)
+
+    def __getitem__(self, idx):
+
+        target = self.hourly_sales[idx].copy()
+
+        x = target.copy()
+
+        # Random mask
+        mask = np.random.rand(len(x)) < self.mask_prob
+
+        # Keep at least some observations
+        if mask.sum() > len(x) - self.keep_min_hours:
+
+            keep = np.random.choice(len(x), self.keep_min_hours, replace=False)
+
+            mask[:] = True
+            mask[keep] = False
+
+        # Artificial stockout
+        x[mask] = 0.0
+
+        return (torch.from_numpy(x), torch.from_numpy(target))
+    
+
+def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256, lr=1e-3, mask_prob=0.30, device=None, random_state=42):
+    print(op_sales_masked.shape) # TODO
+    hourly_sales = op_sales.copy()
+
+    # Keep only complete days
+    complete_days = ~np.isnan(hourly_sales).any(axis=1)
+
+    train_data = hourly_sales[complete_days]
+        
+    train_dataset = RecoveryDataset(train_data, mask_prob=0.30)
+
+    # TODO delete if it works
+    x, y = train_dataset[0]
+    print("Input")
+    print(x)
+    print("Target")
+    print(y)
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Keep only complete days
+    complete_days = ~np.isnan(op_sales_masked).any(axis=1)
+
+    train_data = op_sales_masked[complete_days]
+
+    print(f"Training days: {len(train_data):,}")
+
+    dataset = RecoveryDataset(train_data, mask_prob=mask_prob)
+
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False,)
+
+    # Model
+    seq_len = hourly_sales.shape[1]
+    model = DLinear(seq_len=seq_len)
+
+    model.to(device)
+
+    criterion = nn.MSELoss()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Training
+    model.train()
+
+    for epoch in range(epochs):
+
+        running_loss = 0.0
+
+        for x, y in loader:
+
+            x = x.to(device)
+            y = y.to(device)
+
+            optimizer.zero_grad()
+
+            pred = model(x)
+
+            loss = criterion(pred, y)
+
+            loss.backward()
+
+            optimizer.step()
+
+            running_loss += loss.item() * len(x)
+
+        epoch_loss = running_loss / len(dataset)
+
+        print(f"Epoch {epoch+1:3d}/{epochs} | Loss = {epoch_loss:.5f}")
+
+    # Save model
+    model_path="dlinear_model.pt"
+    torch.save(model.state_dict(), model_path)
+    print(f"\nModel saved to '{model_path}'")
+
+    return model
+
+def dlinear(history, op_sales, op_sales_masked, outside_slice):
+    """
+    Recover hourly demand using a pretrained DLinear model.
+    """
+
+    # ---------------- LOAD TRAINED MODEL ----------------
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = DLinear()
+    if os.path.exists("dlinear_model.pt"):
+        model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
+    else:
+        model = dlinear_train(history, op_sales, op_sales_masked)
+
+    model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
+    model.to(device)
+    model.eval()
+
+    # ---------------- PREPARE INPUT ----------------
+    imputed = op_sales_masked.copy()
+
+    nan_mask = np.isnan(imputed)
+
+    # DLinear cannot handle NaNs
+    model_input = np.nan_to_num(imputed, nan=0.0)
+
+    x = torch.tensor(model_input, dtype=torch.float32, device=device)
+
+    # shape: (batch, 16)
+    x = x.unsqueeze(1)
+
+    # ---------------- PREDICT ----------------
+    with torch.no_grad():
+        prediction = model(x).squeeze(1).cpu().numpy()
+
+    # ---------------- IMPUTE ----------------
+    imputed[nan_mask] = prediction[nan_mask]
+    imputed = np.maximum(imputed, 0)
+
+    # ---------------- DAILY RECOVERY ----------------
+    recovered_sum = np.sum(imputed, axis=1)
+
+    recovered_daily = outside_slice + recovered_sum
+
+    history["recovered_daily_sales_dlinear"] = recovered_daily
+
+    print(f"Imputed {nan_mask.sum():,} hourly cells")
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {history['recovered_daily_sales_dlinear'].mean():.4f}")
+
+    return imputed
