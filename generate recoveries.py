@@ -219,16 +219,16 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_autoencoder",
     # },
-    # "dlinear": {
-    #     "func": recovery.dlinear,
-    #     "args": (history, op_sales, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_dlinear",
-    # },
-    "lightgbm_v2": {
-        "func": recovery.lightgbm_v2,
-        "args": (history, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_lightgbm_v2",
-    }, #=== LightGBM Recovery v2 Finished ===
+    "dlinear": {
+        "func": recovery.dlinear,
+        "args": (history, op_sales, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_dlinear",
+    },
+    # "lightgbm_v2": {
+    #     "func": recovery.lightgbm_v2,
+    #     "args": (history, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_lightgbm_v2",
+    # }, #=== LightGBM Recovery v2 Finished ===
     # Imputed 14,311,536 hourly cells
     # Mean raw sale_amount: 0.9986
     # Mean recovered sales: 1.1762

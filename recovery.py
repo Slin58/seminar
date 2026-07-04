@@ -2904,13 +2904,6 @@ def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256,
         
     train_dataset = RecoveryDataset(train_data, mask_prob=0.30)
 
-    # TODO delete if it works
-    x, y = train_dataset[0]
-    print("Input")
-    print(x)
-    print("Target")
-    print(y)
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -2975,7 +2968,6 @@ def dlinear(history, op_sales, op_sales_masked, outside_slice):
     Recover hourly demand using a pretrained DLinear model.
     """
 
-    # ---------------- LOAD TRAINED MODEL ----------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = DLinear()
@@ -2988,9 +2980,7 @@ def dlinear(history, op_sales, op_sales_masked, outside_slice):
     model.to(device)
     model.eval()
 
-    # ---------------- PREPARE INPUT ----------------
     imputed = op_sales_masked.copy()
-
     nan_mask = np.isnan(imputed)
 
     # DLinear cannot handle NaNs
@@ -2998,18 +2988,15 @@ def dlinear(history, op_sales, op_sales_masked, outside_slice):
 
     x = torch.tensor(model_input, dtype=torch.float32, device=device)
 
-    # shape: (batch, 16)
-    x = x.unsqueeze(1)
-
-    # ---------------- PREDICT ----------------
+    # predict
     with torch.no_grad():
         prediction = model(x).squeeze(1).cpu().numpy()
 
-    # ---------------- IMPUTE ----------------
+    # impute
     imputed[nan_mask] = prediction[nan_mask]
     imputed = np.maximum(imputed, 0)
 
-    # ---------------- DAILY RECOVERY ----------------
+    # daily recovery
     recovered_sum = np.sum(imputed, axis=1)
 
     recovered_daily = outside_slice + recovered_sum
