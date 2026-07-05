@@ -83,12 +83,13 @@ forecast_models = {
     #"hist_gradient_boosting_forecast": forecast.hist_gradient_boosting_forecast,
     #"hist_gradient_boosting_forecast_optimized": forecast.hist_gradient_boosting_forecast_optimized, # TODO Potenzial
     #"extra_trees_forecast": forecast.extra_trees_forecast,
+    #"dlinear_forecast": forecast.dlinear
     }
 
 # TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
 # LSTM, catboost, cnn
 
-recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm"] # if list empty all recovery methods are used
+recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
 # ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen

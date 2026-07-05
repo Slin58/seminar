@@ -5095,6 +5095,142 @@ def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+
+
+def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=512, lr=1e-3):
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Build training sequences
+    X = []
+    y = []
+
+    for _, group in train_df.groupby("series_id"):
+
+        group = group.sort_values("dt")
+
+        values = group[target_col].to_numpy(np.float32)
+
+        if len(values) <= input_size:
+            continue
+
+        for i in range(input_size, len(values)):
+            X.append(values[i-input_size:i])
+            y.append(values[i])
+
+    X = torch.tensor(np.asarray(X), dtype=torch.float32).to(device)
+    y = torch.tensor(np.asarray(y), dtype=torch.float32).to(device)
+
+    print(f"Training samples: {len(X):,}")
+
+    class DLinear(nn.Module):
+
+        def __init__(self, seq_len):
+
+            super().__init__()
+
+            self.trend = nn.Linear(seq_len, 1)
+            self.seasonal = nn.Linear(seq_len, 1)
+
+        def forward(self, x):
+
+            trend = self.trend(x)
+            seasonal = self.seasonal(x)
+
+            return (trend + seasonal).squeeze(-1)
+
+    model = DLinear(input_size).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    criterion = nn.MSELoss()
+
+    # Train
+    model.train()
+
+    n = len(X)
+
+    for epoch in range(epochs):
+
+        perm = torch.randperm(n)
+
+        epoch_loss = 0
+
+        for i in range(0, n, batch_size):
+
+            idx = perm[i:i+batch_size]
+
+            xb = X[idx]
+            yb = y[idx]
+
+            optimizer.zero_grad()
+
+            pred = model(xb)
+
+            loss = criterion(pred, yb)
+
+            loss.backward()
+
+            optimizer.step()
+
+            epoch_loss += loss.item() * len(idx)
+
+        print(f"Epoch {epoch+1}/{epochs}  Loss={epoch_loss/n:.5f}")
+
+    # Forecast validation
+    model.eval()
+
+    val_pred = val_df.copy()
+
+    predictions = []
+
+    history = {}
+
+    for sid, group in train_df.groupby("series_id"):
+
+        group = group.sort_values("dt")
+
+        history[sid] = list(group[target_col].values)
+
+    with torch.no_grad():
+
+        for row in val_pred.itertuples():
+
+            sid = row.series_id
+
+            hist = history.get(sid, [])
+
+            if len(hist) < input_size:
+
+                pred = train_df[target_col].mean()
+
+            else:
+
+                x = torch.tensor(
+                    hist[-input_size:],
+                    dtype=torch.float32,
+                    device=device
+                ).unsqueeze(0)
+
+                pred = model(x).item()
+
+            pred = max(pred, 0)
+
+            predictions.append(pred)
+
+            if sid not in history:
+                history[sid] = []
+
+            history[sid].append(pred)
+
+    val_pred["prediction"] = predictions
+
+    return val_pred
+
 # TODO 
 # Exponential Smoothing (Siehe oben) (Nils)
 # DLinear (Nils)

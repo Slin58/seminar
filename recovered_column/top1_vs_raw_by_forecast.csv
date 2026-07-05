@@ -55,6 +55,8 @@ cnn_forecast_original_3epochs,top1 recovery,rolling_mean,0.3291,0.4085,0.2677,0.
 cnn_forecast_original_3epochs,raw_sales,raw_sales,0.3404,0.4118,0.2852,0.3381,198987.0
 single_exponential_smoothing_series,top1 recovery,stl_real,0.3285,0.3952,0.2768,0.3265,198987.0
 single_exponential_smoothing_series,raw_sales,raw_sales,0.3488,0.4087,0.3025,0.3481,198987.0
+dlinear_forecast,top1 recovery,stl_real,0.3298,0.3974,0.2776,0.3279,198987.0
+dlinear_forecast,raw_sales,raw_sales,0.3318,0.4048,0.2753,0.3291,198987.0
 double_exponential_smoothing,top1 recovery,stl_real,0.3329,0.419,0.2664,0.3281,198987.0
 double_exponential_smoothing,raw_sales,raw_sales,0.3531,0.428,0.2951,0.3506,198987.0
 cnn_forecast_fast,top1 recovery,stl_real,0.3313,0.4059,0.2735,0.3283,198987.0
