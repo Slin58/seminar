@@ -9,8 +9,14 @@ print(torch.__version__)
 print(torch.cuda.is_available())
 print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
+from pathlib import Path
 
-ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
+token_file = Path("hugging_face_token.txt")
+if token_file.exists():
+    huggingface_token = token_file.read_text(encoding="utf-8").strip()
+    ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K", token=huggingface_token,)    
+else:
+    ds = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
 
 # Data preparation
 train_raw = ds["train"].to_pandas()
@@ -21,7 +27,7 @@ history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
 train, val = utils.time_split(history, horizon=7)
-
+# TODO Hier drunter sollte nur mit train (nicht history) gearbeitet werden, da sonst data leakage entsteht, da die recoveries auf dem gesamten history berechnet werden und somit auch die future values enthalten sind.
 
 series_stockouts = history.groupby("series_id")["is_censored"].mean()
 example_sid = series_stockouts[(series_stockouts > 0.3) & (series_stockouts < 0.7)].index[0]
@@ -40,10 +46,14 @@ op_sales_masked = np.where(op_stock_status == 1, np.nan, op_sales) # hours_sale,
 
 total_cells = op_sales_masked.size
 missing_cells = np.isnan(op_sales_masked).sum()
+print(f"Operating window: {op_sales_masked.shape[1]} hours (h06-h21)")
+print(f"Missing hourly cells: {missing_cells:,} / {total_cells:,} ({missing_cells/total_cells:.1%})")
 
-visible_sum = np.nansum(np.where(op_stock_status == 0, op_sales, 0), axis=1) # all sales where enough stock was available
+#visible_sum = np.nansum(np.where(op_stock_status == 0, op_sales, 0), axis=1) # all sales where enough stock was available
 #outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - visible_sum, 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21) TODO möglicher Fehler Doppelzählung
-outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - np.nansum(op_sales), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
+outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - np.nansum(op_sales, axis=1), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
+
+
 
 RANDOM_SEED = 42
 rng = np.random.default_rng(RANDOM_SEED)
@@ -93,12 +103,12 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_rolling_mean",
     # },
-    # "ema": {
+    # "exponential_moving_average": {
     #     "func": recovery.exponential_moving_average,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_exponential_moving_average",
     # },
-    # "ema_series": {
+    # "exponential_moving_average_series": {
     #     "func": recovery.exponential_moving_average_series,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
@@ -157,14 +167,6 @@ recovery_methods = {
     #     "target_col": "recovered_daily_sales_random_forest",
     # },
 
-
-
-    # "random_forest": {
-    #     "func": recovery.random_forest,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_random_forest",
-    # },
-
     # "lightgbm": {
     #     "func": recovery.lightgbm,
     #     "args": (history, op_sales_masked, outside_slice),
@@ -192,25 +194,25 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_transformer",
     # },
-    # "diffusion_model": {
-    #     "func": recovery.diffusion_model,
+    # "diffusion": {
+    #     "func": recovery.diffusion,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_diffusion",
     # },
-    # "tobit_model": {
-    #     "func": recovery.tobit_model,
+    # "tobit": {
+    #     "func": recovery.tobit,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_tobit",
     # },
 
     # "tobit_improved": {
-    #     "func": recovery.tobit_model,
+    #     "func": recovery.tobit_improved,
     #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_tobit",
+    #     "target_col": "recovered_daily_sales_tobit_improved",
     # },
 
-    # "bayesian_model": {
-    #     "func": recovery.bayesian_model,
+    # "bayesian": {
+    #     "func": recovery.bayesian,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_bayesian",  
     # },
@@ -219,16 +221,17 @@ recovery_methods = {
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_autoencoder",
     # },
-    "dlinear": {
-        "func": recovery.dlinear,
-        "args": (history, op_sales, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_dlinear",
-    },
+    # "dlinear": {
+    #     "func": recovery.dlinear,
+    #     "args": (history, op_sales, op_sales_masked, outside_slice),
+    #     "target_col": "recovered_daily_sales_dlinear",
+    # },
     # "lightgbm_v2": {
     #     "func": recovery.lightgbm_v2,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_lightgbm_v2",
-    # }, #=== LightGBM Recovery v2 Finished ===
+    # }, 
+    #=== LightGBM Recovery v2 Finished ===
     # Imputed 14,311,536 hourly cells
     # Mean raw sale_amount: 0.9986
     # Mean recovered sales: 1.1762
@@ -239,7 +242,7 @@ recovery_methods = {
 # TODO Kosten Nutzen?
 # knn über 3h
 # bayesian hat zu lange gedauert 
-# tobit model: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT 
+# tobit: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT 
 # Transformer
 # Autoencoder
 # XGBoost Recovery
@@ -257,6 +260,8 @@ recovery_methods = {
 # ------------------------------------------------------------
 # 2. Alle Recovery-Methoden ausführen
 # ------------------------------------------------------------
+
+
 from datetime import datetime
 import json
 
@@ -264,7 +269,12 @@ for recovery_name, method in recovery_methods.items():
     current_time = datetime.now()
 
     print(f"\n=== Running recovery method: {recovery_name} at {current_time} ===")
-    method["func"](*method["args"])
+    recovered_daily = method["func"](*method["args"])
+    history[method["target_col"]] = recovered_daily
+    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    print(f"Mean recovered sales: {recovered_daily.mean():.4f}")
+
+
     arr = history[f"{method['target_col']}"].to_numpy()
 
     np.save(f"recovered_column/{method['target_col']}.npy", arr)

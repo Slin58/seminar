@@ -1,46 +1,39 @@
-
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import warnings
 import numpy as np
 import pandas as pd
+
 from statsmodels.tsa.arima.model import ARIMA
 from joblib import Parallel, delayed
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing, Holt, ExponentialSmoothing
+import lightgbm as lgb
+import xgboost as xgb
+from catboost import CatBoostRegressor
 
-# TODO: Forecast Methoden:
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
-# - random_forest
-# - xgboost
-# - lightgbm
-# - CNN
-# - RNN, LSTM oder Transformer
-# - Gaussian Process Regression
+from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor, ExtraTreesRegressor
+from sklearn.preprocessing import StandardScaler
 
-# Nils:
-# - exponential smoothing (Holt-Winters) pro series_id, mit Fallbacks -> dauert wahrscheinlich zu lange
-# - simple tripple exponential smoothing
-
-# Laura: 
-# - arima (lädt über eine Stunde nur für raw_sales)
-# - sarima
-
-def global_mean(train_df, val_df, target_col):
+def global_mean(train_df, val_df, recovery_col):
     """
     Forecast = Durchschnitt der jeweiligen series_id im Training.
     """
     val_pred = val_df.copy()
 
-    series_mean = train_df.groupby("series_id")[target_col].mean()
+    series_mean = train_df.groupby("series_id")[recovery_col].mean()
 
     val_pred["prediction"] = val_pred["series_id"].map(series_mean)
 
-    fallback = train_df[target_col].mean()
+    fallback = train_df[recovery_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(fallback)
 
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
 
-def seasonal_naive(train_df, val_df, target_col):
+def seasonal_naive(train_df, val_df, recovery_col):
     """
     Forecast = Wert von vor 7 Tagen.
     """
@@ -48,13 +41,11 @@ def seasonal_naive(train_df, val_df, target_col):
 
     val_start = val_pred["day_idx"].min()
 
-    last_week = train_df[
-        train_df["day_idx"].between(val_start - 7, val_start - 1)
-    ][["series_id", "day_idx", target_col]].copy()
+    last_week = train_df[train_df["day_idx"].between(val_start - 7, val_start - 1)][["series_id", "day_idx", recovery_col]].copy()
 
     last_week["forecast_day"] = last_week["day_idx"] + 7
 
-    last_week = last_week.rename(columns={target_col: "prediction"})
+    last_week = last_week.rename(columns={recovery_col: "prediction"})
 
     val_pred = val_pred.merge(
         last_week[["series_id", "forecast_day", "prediction"]],
@@ -65,60 +56,51 @@ def seasonal_naive(train_df, val_df, target_col):
 
     val_pred = val_pred.drop(columns=["forecast_day"], errors="ignore")
 
-    fallback = train_df.groupby("series_id")[target_col].mean()
+    fallback = train_df.groupby("series_id")[recovery_col].mean()
 
     val_pred["prediction"] = val_pred["prediction"].fillna(
         val_pred["series_id"].map(fallback)
     )
 
-    global_fallback = train_df[target_col].mean()
+    global_fallback = train_df[recovery_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
 
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
 
-def rolling_28d(train_df, val_df, target_col):
+def rolling_28d(train_df, val_df, recovery_col):
     """
     Forecast = Durchschnitt der letzten 28 Trainingstage pro series_id.
     """
     val_pred = val_df.copy()
 
-    roll28 = train_df.groupby("series_id")[target_col].apply(
-        lambda x: x.tail(28).mean()
-    )
+    roll28 = train_df.groupby("series_id")[recovery_col].apply(lambda x: x.tail(28).mean())
 
     val_pred["prediction"] = val_pred["series_id"].map(roll28)
 
-    fallback = train_df.groupby("series_id")[target_col].mean()
+    fallback = train_df.groupby("series_id")[recovery_col].mean()
 
-    val_pred["prediction"] = val_pred["prediction"].fillna(
-        val_pred["series_id"].map(fallback)
-    )
+    val_pred["prediction"] = val_pred["prediction"].fillna(val_pred["series_id"].map(fallback))
 
-    global_fallback = train_df[target_col].mean()
+    global_fallback = train_df[recovery_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
 
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
 
-
-#TODO single and double exponential smoothing (alpha, beta, gamma einstellen) und holt-winters nochmal optimieren bzw. Chati fragen warum er solange laden
-
-def single_exponential_smoothing(train_df, val_df, target_col):
-    from statsmodels.tsa.holtwinters import SimpleExpSmoothing
-
+def single_exponential_smoothing(train_df, val_df, recovery_col):
     val_pred = val_df.copy()
 
-    fallback = train_df[target_col].mean()
+    fallback = train_df[recovery_col].mean()
 
     predictions = {}
 
     for series_id, train_series in train_df.groupby("series_id"):
 
         # Convert to numpy to avoid index warnings
-        y = train_series[target_col].to_numpy()
+        y = train_series[recovery_col].to_numpy()
 
         if len(y) == 0:
             predictions[series_id] = fallback
@@ -135,26 +117,20 @@ def single_exponential_smoothing(train_df, val_df, target_col):
             except Exception:
                 predictions[series_id] = y.mean()
 
-    val_pred["prediction"] = (
-        val_pred["series_id"]
-        .map(predictions)
-        .fillna(fallback)
-        .clip(lower=0)
-    )
+    val_pred["prediction"] = (val_pred["series_id"].map(predictions).fillna(fallback).clip(lower=0))
     print(f"smoothing_level: {fit.params['smoothing_level']}")
     return val_pred
 
-def double_exponential_smoothing(train_df, val_df, target_col):
-    from statsmodels.tsa.holtwinters import Holt
+def double_exponential_smoothing(train_df, val_df, recovery_col):
 
     val_pred = val_df.copy()
 
-    fallback = train_df[target_col].mean()
+    fallback = train_df[recovery_col].mean()
     predictions = {}
 
     for series_id, train_series in train_df.groupby("series_id"):
 
-        y = train_series[target_col].dropna().to_numpy()
+        y = train_series[recovery_col].dropna().to_numpy()
 
         if len(y) < 2:
             predictions[series_id] = y.mean() if len(y) else fallback
@@ -183,23 +159,16 @@ def double_exponential_smoothing(train_df, val_df, target_col):
 
     return val_pred
 
-def triple_exponential_smoothing(
-    train_df,
-    val_df,
-    target_col,
-    seasonal_periods=7
-):
-    import pandas as pd
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+def triple_exponential_smoothing(train_df, val_df, recovery_col, seasonal_periods=7):
 
     val_pred = val_df.copy()
 
-    fallback = train_df[target_col].mean()
+    fallback = train_df[recovery_col].mean()
     predictions = {}
 
     for series_id, train_series in train_df.groupby("series_id"):
 
-        y = train_series[target_col].dropna().to_numpy()
+        y = train_series[recovery_col].dropna().to_numpy()
 
         # Need enough data for seasonality
         if len(y) < 2 * seasonal_periods:
@@ -207,23 +176,13 @@ def triple_exponential_smoothing(
             continue
 
         try:
-            fit = ExponentialSmoothing(
-                y,
-                trend="add",
-                seasonal="add",
-                seasonal_periods=seasonal_periods
-            ).fit(optimized=True)
+            fit = ExponentialSmoothing(y, trend="add", seasonal="add", seasonal_periods=seasonal_periods).fit(optimized=True)
 
             alpha = fit.params["smoothing_level"]
             beta = fit.params["smoothing_trend"]
             gamma = fit.params["smoothing_seasonal"]
 
-            print(
-                f"series_id={series_id}, "
-                f"alpha={alpha:.4f}, "
-                f"beta={beta:.4f}, "
-                f"gamma={gamma:.4f}"
-            )
+            print(f"series_id={series_id}, alpha={alpha:.4f}, beta={beta:.4f}, gamma={gamma:.4f}")
 
             predictions[series_id] = float(fit.forecast(1)[0])
 
@@ -231,17 +190,11 @@ def triple_exponential_smoothing(
             print(f"series_id={series_id}: {e}")
             predictions[series_id] = y.mean()
 
-    val_pred["prediction"] = (
-        val_pred["series_id"]
-        .map(predictions)
-        .fillna(fallback)
-        .clip(lower=0)
-    )
+    val_pred["prediction"] = (val_pred["series_id"].map(predictions).fillna(fallback).clip(lower=0))
 
     return val_pred
 
-
-def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3): # single exp with series_id
+def simple_exponential_smoothing(train_df, val_df, recovery_col, alpha=0.3): # single exp with series_id
     """
     Simple Exponential Smoothing (SES).
 
@@ -263,7 +216,7 @@ def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3): # sin
     train_sorted = train_df.sort_values(["series_id", "day_idx"])
 
     levels = (
-        train_sorted.groupby("series_id")[target_col]
+        train_sorted.groupby("series_id")[recovery_col]
         .apply(lambda s: s.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
     )
     levels.name = "prediction"
@@ -273,20 +226,20 @@ def simple_exponential_smoothing(train_df, val_df, target_col, alpha=0.3): # sin
     )
 
     # Fallback 1: series_id Durchschnitt (falls series_id nicht in train)
-    fallback_series = train_df.groupby("series_id")[target_col].mean()
+    fallback_series = train_df.groupby("series_id")[recovery_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(
         val_pred["series_id"].map(fallback_series)
     )
 
     # Fallback 2: globaler Durchschnitt
-    global_fallback = train_df[target_col].mean()
+    global_fallback = train_df[recovery_col].mean()
     val_pred["prediction"] = val_pred["prediction"].fillna(global_fallback)
 
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
 
-def holt_winters_exp_forecast(train_df, val_df, target_col, seasonal_periods=7):
+def holt_winters_exp_forecast(train_df, val_df, recovery_col, seasonal_periods=7):
     """
     Optimized Holt-Winters forecasting per series_id.
 
@@ -298,11 +251,11 @@ def holt_winters_exp_forecast(train_df, val_df, target_col, seasonal_periods=7):
     - Single-pass prediction dict build
     """
 
-    global_fallback = float(train_df[target_col].mean())
-    series_fallback = train_df.groupby("series_id")[target_col].mean().to_dict()
+    global_fallback = float(train_df[recovery_col].mean())
+    series_fallback = train_df.groupby("series_id")[recovery_col].mean().to_dict()
 
     train_groups = {
-        sid: grp.sort_values("day_idx")[target_col].to_numpy(dtype=np.float64)
+        sid: grp.sort_values("day_idx")[recovery_col].to_numpy(dtype=np.float64)
         for sid, grp in train_df.groupby("series_id")
     }
     train_max_day = {
@@ -416,7 +369,7 @@ def holt_winters_exp_forecast(train_df, val_df, target_col, seasonal_periods=7):
     )
     return val_pred
 
-def arima(train_df, val_df, target_col, order=(1, 1, 1)):
+def arima(train_df, val_df, recovery_col, order=(1, 1, 1)):
     """
     ARIMA Forecast pro series_id.
 
@@ -437,8 +390,8 @@ def arima(train_df, val_df, target_col, order=(1, 1, 1)):
 
     val_pred = val_df.copy()
 
-    global_fallback = train_df[target_col].mean()
-    series_fallback = train_df.groupby("series_id")[target_col].mean()
+    global_fallback = train_df[recovery_col].mean()
+    series_fallback = train_df.groupby("series_id")[recovery_col].mean()
 
     predictions = {}
 
@@ -456,7 +409,7 @@ def arima(train_df, val_df, target_col, order=(1, 1, 1)):
                 predictions[(series_id, day_idx)] = fb
             continue
 
-        y = train_group[target_col].astype(float).values
+        y = train_group[recovery_col].astype(float).values
         n = len(y)
 
         train_max_day = train_group["day_idx"].max()
@@ -516,7 +469,7 @@ def arima(train_df, val_df, target_col, order=(1, 1, 1)):
 
     return val_pred
 
-def arima_like_fast(train_df, val_df, target_col, order=(1, 1, 0)):
+def arima_like_fast(train_df, val_df, recovery_col, order=(1, 1, 0)):
     """
     Fast ARIMA-like Forecast pro series_id.
 
@@ -527,13 +480,10 @@ def arima_like_fast(train_df, val_df, target_col, order=(1, 1, 0)):
     - Sehr viel schneller als statsmodels ARIMA.
     """
 
-    import numpy as np
-    import pandas as pd
-
     val_pred = val_df.copy()
 
-    global_fallback = train_df[target_col].mean()
-    series_mean = train_df.groupby("series_id")[target_col].mean()
+    global_fallback = train_df[recovery_col].mean()
+    series_mean = train_df.groupby("series_id")[recovery_col].mean()
 
     predictions = {}
 
@@ -548,7 +498,7 @@ def arima_like_fast(train_df, val_df, target_col, order=(1, 1, 0)):
         if train_group.empty:
             forecast_values = np.full(len(val_days), global_fallback)
         else:
-            y = train_group[target_col].astype(float).values
+            y = train_group[recovery_col].astype(float).values
             train_max_day = train_group["day_idx"].max()
 
             if len(y) >= 2:
@@ -597,23 +547,20 @@ def arima_like_fast(train_df, val_df, target_col, order=(1, 1, 0)):
 
     return val_pred
 
-def arima_like_fast_vectorized(train_df, val_df, target_col):
-    import numpy as np
-    import pandas as pd
-
+def arima_like_fast_vectorized(train_df, val_df, recovery_col):
     train = train_df.sort_values(["series_id", "day_idx"]).copy()
     val_pred = val_df.copy()
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     last = train.groupby("series_id").tail(1)[
-        ["series_id", "day_idx", target_col]
+        ["series_id", "day_idx", recovery_col]
     ].rename(columns={
         "day_idx": "train_max_day",
-        target_col: "last_value"
+        recovery_col: "last_value"
     })
 
-    train["diff"] = train.groupby("series_id")[target_col].diff()
+    train["diff"] = train.groupby("series_id")[recovery_col].diff()
 
     trend = (
         train.groupby("series_id")["diff"]
@@ -642,20 +589,18 @@ def arima_like_fast_vectorized(train_df, val_df, target_col):
 
     return val_pred
 
-def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
+def lightgbm_forecast(train_df, val_df, recovery_col, random_state=42):
     """
     LightGBM Forecast.
 
     Trainiert ein globales Modell über alle series_id hinweg.
-    Zielvariable ist target_col, z. B.:
+    Zielvariable ist recovery_col, z. B.:
     - sale_amount
     - recovered_daily_sales_xgboost
     - recovered_daily_sales_hourly_mean
 
     Das Modell nutzt Zeit-, Serien- und Kontextfeatures.
     """
-
-    import lightgbm as lgb
 
     train = train_df.copy()
     val_pred = val_df.copy()
@@ -671,11 +616,11 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
         df["month"] = pd.to_datetime(df["dt"]).dt.month
 
         # Lag-/Rolling-Features aus sale_amount bzw. vorhandenen Features
-        # Falls target_col schon eigene Recovery-Spalte ist, werden Features
+        # Falls recovery_col schon eigene Recovery-Spalte ist, werden Features
         # trotzdem aus dieser Zielspalte gebaut.
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
@@ -724,10 +669,10 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
     # 3. Missing Values behandeln
     # ------------------------------------------------------------
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -761,11 +706,7 @@ def lightgbm_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def lightgbm_forecast_optimized(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -779,7 +720,7 @@ def lightgbm_forecast_optimized(train_df, val_df, target_col, random_state=42):
         df["is_weekend"] = (df["weekday"] >= 5).astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag2"] = grp.shift(2)
@@ -825,10 +766,10 @@ def lightgbm_forecast_optimized(train_df, val_df, target_col, random_state=42):
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = lgb.LGBMRegressor(
@@ -854,11 +795,7 @@ def lightgbm_forecast_optimized(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -880,7 +817,7 @@ def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_sta
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         # ------------------------------------------------------------
         # Lags
@@ -1027,10 +964,10 @@ def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_sta
     # ------------------------------------------------------------
     # Prepare Data
     # ------------------------------------------------------------
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -1067,11 +1004,7 @@ def lightgbm_forecast_feature_optimized(train_df, val_df, target_col, random_sta
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized_v2(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -1093,7 +1026,7 @@ def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -1105,35 +1038,15 @@ def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_
         windows = [3, 7, 14, 21, 28]
 
         for w in windows:
-            df[f"roll_mean_{w}"] = (
-                shifted.rolling(w, min_periods=1)
-                .mean()
-                .reset_index(level=0, drop=True)
-            )
+            df[f"roll_mean_{w}"] = (shifted.rolling(w, min_periods=1).mean().reset_index(level=0, drop=True))
 
-            df[f"roll_std_{w}"] = (
-                shifted.rolling(w, min_periods=2)
-                .std()
-                .reset_index(level=0, drop=True)
-            )
+            df[f"roll_std_{w}"] = (shifted.rolling(w, min_periods=2).std().reset_index(level=0, drop=True))
 
-            df[f"roll_min_{w}"] = (
-                shifted.rolling(w, min_periods=1)
-                .min()
-                .reset_index(level=0, drop=True)
-            )
+            df[f"roll_min_{w}"] = (shifted.rolling(w, min_periods=1).min().reset_index(level=0, drop=True))
 
-            df[f"roll_max_{w}"] = (
-                shifted.rolling(w, min_periods=1)
-                .max()
-                .reset_index(level=0, drop=True)
-            )
+            df[f"roll_max_{w}"] = (shifted.rolling(w, min_periods=1).max().reset_index(level=0, drop=True))
 
-            df[f"roll_median_{w}"] = (
-                shifted.rolling(w, min_periods=1)
-                .median()
-                .reset_index(level=0, drop=True)
-            )
+            df[f"roll_median_{w}"] = (shifted.rolling(w, min_periods=1).median().reset_index(level=0, drop=True))
 
         df["trend_7"] = df["lag_1"] - df["lag_7"]
         df["trend_14"] = df["lag_1"] - df["lag_14"]
@@ -1187,40 +1100,24 @@ def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_
         "psd",
     ]
 
-    feature_cols += [
-        f"lag_{lag}"
-        for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
-    ]
+    feature_cols += [f"lag_{lag}" for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]]
 
     for w in [3, 7, 14, 21, 28]:
-        feature_cols += [
-            f"roll_mean_{w}",
-            f"roll_std_{w}",
-            f"roll_min_{w}",
-            f"roll_max_{w}",
-            f"roll_median_{w}",
-        ]
+        feature_cols += [f"roll_{stat}_{w}" for stat in ("mean", "std", "min", "max", "median")]
 
     feature_cols += [
-        "trend_7",
-        "trend_14",
-        "trend_28",
-        "trend_ratio_7",
-        "trend_ratio_14",
-        "trend_ratio_28",
-        "lag1_roll7",
-        "lag1_roll28",
-        "lag7_roll7",
-        "ratio_roll7",
-        "ratio_roll28",
+        "trend_7", "trend_14", "trend_28",
+        "trend_ratio_7", "trend_ratio_14", "trend_ratio_28",
+        "lag1_roll7", "lag1_roll28", "lag7_roll7",
+        "ratio_roll7", "ratio_roll28",
     ]
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -1254,11 +1151,7 @@ def lightgbm_forecast_feature_optimized_v2(train_df, val_df, target_col, random_
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized_v3(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized_v3(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -1277,7 +1170,7 @@ def lightgbm_forecast_feature_optimized_v3(train_df, val_df, target_col, random_
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
         for lag in lags:
@@ -1343,10 +1236,10 @@ def lightgbm_forecast_feature_optimized_v3(train_df, val_df, target_col, random_
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = lgb.LGBMRegressor(
@@ -1379,11 +1272,7 @@ def lightgbm_forecast_feature_optimized_v3(train_df, val_df, target_col, random_
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized_v4(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized_v4(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -1402,7 +1291,7 @@ def lightgbm_forecast_feature_optimized_v4(train_df, val_df, target_col, random_
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -1541,10 +1430,10 @@ def lightgbm_forecast_feature_optimized_v4(train_df, val_df, target_col, random_
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -1578,11 +1467,7 @@ def lightgbm_forecast_feature_optimized_v4(train_df, val_df, target_col, random_
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized_v5(train_df, val_df, target_col, random_state=42):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized_v5(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -1601,7 +1486,7 @@ def lightgbm_forecast_feature_optimized_v5(train_df, val_df, target_col, random_
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -1714,10 +1599,10 @@ def lightgbm_forecast_feature_optimized_v5(train_df, val_df, target_col, random_
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -1751,17 +1636,7 @@ def lightgbm_forecast_feature_optimized_v5(train_df, val_df, target_col, random_
 
     return val_feat
 
-def lightgbm_forecast_feature_optimized_v6_feature_selection(
-    train_df,
-    val_df,
-    target_col,
-    random_state=42,
-    top_n_features=45
-):
-    import lightgbm as lgb
-    import pandas as pd
-    import numpy as np
-
+def lightgbm_forecast_feature_optimized_v6_feature_selection(train_df, val_df, recovery_col, random_state=42, top_n_features=45):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -1780,7 +1655,7 @@ def lightgbm_forecast_feature_optimized_v6_feature_selection(
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -1853,10 +1728,10 @@ def lightgbm_forecast_feature_optimized_v6_feature_selection(
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     # ------------------------------------------------------------
@@ -1926,7 +1801,7 @@ def lightgbm_forecast_feature_optimized_v6_feature_selection(
 
     return val_feat
 
-def xgboost_forecast(train_df, val_df, target_col, random_state=42):
+def xgboost_forecast(train_df, val_df, recovery_col, random_state=42):
     """
     XGBoost Forecast.
 
@@ -1934,10 +1809,6 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
     Forecast der nächsten Tage auf Basis von
     Zeit-, Produkt-, Store- und Wetterfeatures.
     """
-
-    import xgboost as xgb
-    import numpy as np
-    import pandas as pd
 
     train = train_df.copy()
     val_pred = val_df.copy()
@@ -1954,7 +1825,7 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
@@ -2024,10 +1895,10 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
     # 3. Daten vorbereiten
     # ------------------------------------------------------------
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -2060,11 +1931,7 @@ def xgboost_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
-    import xgboost as xgb
-    import pandas as pd
-    import numpy as np
-
+def xgboost_forecast_feature_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -2084,7 +1951,7 @@ def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_stat
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]:
             df[f"lag_{lag}"] = grp.shift(lag)
@@ -2167,10 +2034,10 @@ def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_stat
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = xgb.XGBRegressor(
@@ -2196,11 +2063,7 @@ def xgboost_forecast_feature_optimized(train_df, val_df, target_col, random_stat
 
     return val_feat
 
-def xgboost_forecast_feature_fast(train_df, val_df, target_col, random_state=42):
-    import xgboost as xgb
-    import pandas as pd
-    import numpy as np
-
+def xgboost_forecast_feature_fast(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -2214,7 +2077,7 @@ def xgboost_forecast_feature_fast(train_df, val_df, target_col, random_state=42)
         df["is_weekend"] = (df["weekday"] >= 5).astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         for lag in [1, 2, 3, 7, 14, 28]:
             df[f"lag_{lag}"] = grp.shift(lag)
@@ -2267,10 +2130,10 @@ def xgboost_forecast_feature_fast(train_df, val_df, target_col, random_state=42)
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = xgb.XGBRegressor(
@@ -2296,16 +2159,13 @@ def xgboost_forecast_feature_fast(train_df, val_df, target_col, random_state=42)
 
     return val_feat
 
-def random_forest_forecast(train_df, val_df, target_col, random_state=42):
+def random_forest_forecast(train_df, val_df, recovery_col, random_state=42):
     """
     Random Forest Forecast.
 
     Globales Modell über alle series_id.
     Nutzt Zeit-, Produkt-, Store- und Wetterfeatures.
     """
-
-    from sklearn.ensemble import RandomForestRegressor
-    import pandas as pd
 
     train = train_df.copy()
     val_pred = val_df.copy()
@@ -2322,7 +2182,7 @@ def random_forest_forecast(train_df, val_df, target_col, random_state=42):
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
@@ -2392,10 +2252,10 @@ def random_forest_forecast(train_df, val_df, target_col, random_state=42):
     # Daten vorbereiten
     # ------------------------------------------------------------
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -2433,10 +2293,7 @@ def random_forest_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def random_forest_forecast_optimized(train_df, val_df, target_col, random_state=42):
-    from sklearn.ensemble import RandomForestRegressor
-    import pandas as pd
-
+def random_forest_forecast_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -2447,40 +2304,18 @@ def random_forest_forecast_optimized(train_df, val_df, target_col, random_state=
         df["week_of_year"] = pd.to_datetime(df["dt"]).dt.isocalendar().week.astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
         df["lag14"] = grp.shift(14)
         df["lag28"] = grp.shift(28)
 
-        df["rolling7"] = (
-            grp.shift(1)
-            .rolling(7, min_periods=1)
-            .mean()
-            .reset_index(level=0, drop=True)
-        )
+        df["rolling7"] = (grp.shift(1).rolling(7, min_periods=1).mean().reset_index(level=0, drop=True))
+        df["rolling28"] = (grp.shift(1).rolling(28, min_periods=1).mean().reset_index(level=0, drop=True))
 
-        df["rolling28"] = (
-            grp.shift(1)
-            .rolling(28, min_periods=1)
-            .mean()
-            .reset_index(level=0, drop=True)
-        )
-
-        df["rolling_std_7"] = (
-            grp.shift(1)
-            .rolling(7, min_periods=2)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
-
-        df["rolling_std_28"] = (
-            grp.shift(1)
-            .rolling(28, min_periods=2)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
+        df["rolling_std_7"] = (grp.shift(1).rolling(7, min_periods=2).std().reset_index(level=0, drop=True))
+        df["rolling_std_28"] = (grp.shift(1).rolling(28, min_periods=2).std().reset_index(level=0, drop=True))
 
         return df
 
@@ -2520,22 +2355,14 @@ def random_forest_forecast_optimized(train_df, val_df, target_col, random_state=
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
-    model = RandomForestRegressor(
-        n_estimators=75,
-        max_depth=15,
-        min_samples_leaf=30,
-        max_features="sqrt",
-        n_jobs=-1,
-        random_state=random_state,
-        verbose=1
-    )
+    model = RandomForestRegressor(n_estimators=75, max_depth=15, min_samples_leaf=30, max_features="sqrt", n_jobs=-1, random_state=random_state, verbose=1)
 
     model.fit(X_train, y_train)
 
@@ -2544,10 +2371,7 @@ def random_forest_forecast_optimized(train_df, val_df, target_col, random_state=
 
     return val_feat
 
-def random_forest_forecast_feature_optimized(train_df, val_df, target_col, random_state=42):
-    from sklearn.ensemble import RandomForestRegressor
-    import pandas as pd
-
+def random_forest_forecast_feature_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -2560,7 +2384,7 @@ def random_forest_forecast_feature_optimized(train_df, val_df, target_col, rando
         df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         # Lags
         df["lag1"] = grp.shift(1)
@@ -2572,49 +2396,13 @@ def random_forest_forecast_feature_optimized(train_df, val_df, target_col, rando
         df["lag14"] = grp.shift(14)
         df["lag28"] = grp.shift(28)
 
-        # Rolling Means
-        df["rolling7"] = (
-            grp.shift(1)
-            .rolling(7, min_periods=1)
-            .mean()
-            .reset_index(level=0, drop=True)
-        )
+        df["rolling7"] = grp.shift(1).rolling(7, min_periods=1).mean().reset_index(level=0, drop=True)
+        df["rolling14"] = grp.shift(1).rolling(14, min_periods=1).mean().reset_index(level=0, drop=True)
+        df["rolling28"] = grp.shift(1).rolling(28, min_periods=1).mean().reset_index(level=0, drop=True)
 
-        df["rolling14"] = (
-            grp.shift(1)
-            .rolling(14, min_periods=1)
-            .mean()
-            .reset_index(level=0, drop=True)
-        )
-
-        df["rolling28"] = (
-            grp.shift(1)
-            .rolling(28, min_periods=1)
-            .mean()
-            .reset_index(level=0, drop=True)
-        )
-
-        # Rolling Std
-        df["rolling_std_7"] = (
-            grp.shift(1)
-            .rolling(7, min_periods=2)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
-
-        df["rolling_std_14"] = (
-            grp.shift(1)
-            .rolling(14, min_periods=2)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
-
-        df["rolling_std_28"] = (
-            grp.shift(1)
-            .rolling(28, min_periods=2)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
+        df["rolling_std_7"] = grp.shift(1).rolling(7, min_periods=2).std().reset_index(level=0, drop=True)
+        df["rolling_std_14"] = grp.shift(1).rolling(14, min_periods=2).std().reset_index(level=0, drop=True)
+        df["rolling_std_28"] = grp.shift(1).rolling(28, min_periods=2).std().reset_index(level=0, drop=True)
 
         # Change / Trend Features
         df["diff1"] = df["lag1"] - df["lag2"]
@@ -2679,10 +2467,10 @@ def random_forest_forecast_feature_optimized(train_df, val_df, target_col, rando
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -2703,7 +2491,7 @@ def random_forest_forecast_feature_optimized(train_df, val_df, target_col, rando
 
     return val_feat
 
-def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4096, random_state=42):
+def cnn_forecast(train_df, val_df, recovery_col, window=28, epochs=5, batch_size=4096, random_state=42):
     """
     CNN Forecast.
 
@@ -2711,19 +2499,12 @@ def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4
     und sagt die nächsten Validierungstage voraus.
     """
 
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
-
     torch.manual_seed(random_state)
 
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     # ------------------------------------------------------------
     # 1. Trainingssequenzen bauen
@@ -2733,7 +2514,7 @@ def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -2762,11 +2543,7 @@ def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4
     X_tensor = torch.tensor(X_scaled, dtype=torch.float32).unsqueeze(1)
     y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
 
-    loader = DataLoader(
-        TensorDataset(X_tensor, y_tensor),
-        batch_size=batch_size,
-        shuffle=True
-    )
+    loader = DataLoader(TensorDataset(X_tensor, y_tensor), batch_size=batch_size, shuffle=True)
 
     # ------------------------------------------------------------
     # 3. CNN Modell
@@ -2834,7 +2611,7 @@ def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4
     for series_id, val_group in val_pred.groupby("series_id"):
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
-        history_values = train_group[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+        history_values = train_group[recovery_col].fillna(global_fallback).values.astype(np.float32).tolist()
 
         for _, row in val_group.sort_values("day_idx").iterrows():
 
@@ -2859,36 +2636,18 @@ def cnn_forecast(train_df, val_df, target_col, window=28, epochs=5, batch_size=4
             # autoregressiv: Prognose wird für nächsten Tag weiterverwendet
             history_values.append(pred)
 
-    val_pred["prediction"] = val_pred.apply(
-        lambda r: predictions.get((r["series_id"], r["day_idx"]), global_fallback),
-        axis=1
-    )
+    val_pred["prediction"] = val_pred.apply(lambda r: predictions.get((r["series_id"], r["day_idx"]), global_fallback), axis=1)
 
     val_pred["prediction"] = val_pred["prediction"].clip(lower=0)
 
     return val_pred
 
-def cnn_forecast_fast(
-    train_df,
-    val_df,
-    target_col,
-    window=21,
-    epochs=3,
-    batch_size=16384,
-    random_state=42
-):
+def cnn_forecast_fast(train_df, val_df, recovery_col, window=21, epochs=3, batch_size=16384, random_state=42):
     """
     Faster CNN Forecast.
     Nutzt weiterhin alle Daten, aber mit kleinerem Modell,
     größerer Batch Size und optional GPU.
     """
-
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
 
     torch.manual_seed(random_state)
 
@@ -2898,7 +2657,7 @@ def cnn_forecast_fast(
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     # ------------------------------------------------------------
     # 1. Trainingssequenzen bauen
@@ -2908,7 +2667,7 @@ def cnn_forecast_fast(
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3021,7 +2780,7 @@ def cnn_forecast_fast(
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
         history_values = (
-            train_group[target_col]
+            train_group[recovery_col]
             .fillna(global_fallback)
             .values
             .astype(np.float32)
@@ -3071,22 +2830,7 @@ def cnn_forecast_fast(
 
     return val_pred
 
-def cnn_forecast_balanced(
-    train_df,
-    val_df,
-    target_col,
-    window=28,
-    epochs=3,
-    batch_size=16384,
-    random_state=42
-):
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
-
+def cnn_forecast_balanced(train_df, val_df, recovery_col, window=28, epochs=3, batch_size=16384, random_state=42):
     torch.manual_seed(random_state)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -3095,13 +2839,13 @@ def cnn_forecast_balanced(
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_list = []
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3198,7 +2942,7 @@ def cnn_forecast_balanced(
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
         history_values = (
-            train_group[target_col]
+            train_group[recovery_col]
             .fillna(global_fallback)
             .values
             .astype(np.float32)
@@ -3247,27 +2991,12 @@ def cnn_forecast_balanced(
 
     return val_pred
 
-def cnn_forecast_3epochs(
-    train_df,
-    val_df,
-    target_col,
-    window=28,
-    epochs=3,
-    batch_size=16384,
-    random_state=42
-):
+def cnn_forecast_3epochs(train_df, val_df, recovery_col, window=28, epochs=3, batch_size=16384, random_state=42):
     """
     CNN Forecast.
     Originale Architektur, aber nur 3 Epochs und größere Batch Size.
     Ziel: fast gleiche Qualität wie Original-CNN, aber schneller.
     """
-
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
 
     torch.manual_seed(random_state)
 
@@ -3277,13 +3006,13 @@ def cnn_forecast_3epochs(
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_list = []
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3380,7 +3109,7 @@ def cnn_forecast_3epochs(
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
         history_values = (
-            train_group[target_col]
+            train_group[recovery_col]
             .fillna(global_fallback)
             .values
             .astype(np.float32)
@@ -3424,7 +3153,7 @@ def cnn_forecast_3epochs(
 
     return val_pred
 
-def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epochs=3, batch_size=4096, random_state=42):
+def cnn_forecast_original_3epochs(train_df, val_df, recovery_col, window=28, epochs=3, batch_size=4096, random_state=42):
     """
     CNN Forecast.
 
@@ -3432,19 +3161,12 @@ def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epoch
     und sagt die nächsten Validierungstage voraus.
     """
 
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
-
     torch.manual_seed(random_state)
 
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     # ------------------------------------------------------------
     # 1. Trainingssequenzen bauen
@@ -3454,7 +3176,7 @@ def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epoch
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3555,7 +3277,7 @@ def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epoch
     for series_id, val_group in val_pred.groupby("series_id"):
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
-        history_values = train_group[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+        history_values = train_group[recovery_col].fillna(global_fallback).values.astype(np.float32).tolist()
 
         for _, row in val_group.sort_values("day_idx").iterrows():
 
@@ -3589,28 +3311,13 @@ def cnn_forecast_original_3epochs(train_df, val_df, target_col, window=28, epoch
 
     return val_pred
 
-def lstm_forecast(
-    train_df,
-    val_df,
-    target_col,
-    window=28,
-    epochs=3,
-    batch_size=4096,
-    random_state=42
-):
+def lstm_forecast(train_df, val_df, recovery_col, window=28, epochs=3, batch_size=4096, random_state=42):
     """
     LSTM Forecast.
 
     Nutzt pro series_id die letzten `window` Tage als Sequenz
     und sagt die nächsten Validierungstage autoregressiv voraus.
     """
-
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
 
     torch.manual_seed(random_state)
 
@@ -3620,7 +3327,7 @@ def lstm_forecast(
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     # ------------------------------------------------------------
     # 1. Trainingssequenzen bauen
@@ -3630,7 +3337,7 @@ def lstm_forecast(
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3750,7 +3457,7 @@ def lstm_forecast(
         train_group = train[train["series_id"] == series_id].sort_values("day_idx")
 
         history_values = (
-            train_group[target_col]
+            train_group[recovery_col]
             .fillna(global_fallback)
             .values
             .astype(np.float32)
@@ -3800,22 +3507,7 @@ def lstm_forecast(
 
     return val_pred
 
-def lstm_forecast_fast(
-    train_df,
-    val_df,
-    target_col,
-    window=21,
-    epochs=3,
-    batch_size=8192,
-    random_state=42
-):
-    import numpy as np
-    import pandas as pd
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.preprocessing import StandardScaler
-
+def lstm_forecast_fast(train_df, val_df, recovery_col, window=21, epochs=3, batch_size=8192, random_state=42):
     torch.manual_seed(random_state)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -3824,7 +3516,7 @@ def lstm_forecast_fast(
     train = train_df.copy().sort_values(["series_id", "day_idx"])
     val_pred = val_df.copy().sort_values(["series_id", "day_idx"])
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     # ------------------------------------------------------------
     # 1. Trainingssequenzen bauen
@@ -3834,7 +3526,7 @@ def lstm_forecast_fast(
     y_list = []
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32)
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32)
 
         if len(values) <= window:
             continue
@@ -3948,7 +3640,7 @@ def lstm_forecast_fast(
     last_values = {}
 
     for series_id, g in train.groupby("series_id"):
-        values = g[target_col].fillna(global_fallback).values.astype(np.float32).tolist()
+        values = g[recovery_col].fillna(global_fallback).values.astype(np.float32).tolist()
 
         if len(values) < window:
             values = [global_fallback] * (window - len(values)) + values
@@ -4005,15 +3697,13 @@ def lstm_forecast_fast(
 
     return val_pred
 
-def catboost_forecast(train_df, val_df, target_col, random_state=42):
+def catboost_forecast(train_df, val_df, recovery_col, random_state=42):
     """
     CatBoost Forecast.
 
     Globales Modell über alle series_id.
     """
 
-    from catboost import CatBoostRegressor
-    import pandas as pd
 
     train = train_df.copy()
     val_pred = val_df.copy()
@@ -4030,7 +3720,7 @@ def catboost_forecast(train_df, val_df, target_col, random_state=42):
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
@@ -4106,10 +3796,10 @@ def catboost_forecast(train_df, val_df, target_col, random_state=42):
         if c in feature_cols
     ]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -4142,10 +3832,7 @@ def catboost_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def catboost_forecast_fast(train_df, val_df, target_col, random_state=42):
-    from catboost import CatBoostRegressor
-    import pandas as pd
-
+def catboost_forecast_fast(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4155,7 +3842,7 @@ def catboost_forecast_fast(train_df, val_df, target_col, random_state=42):
         df["month"] = pd.to_datetime(df["dt"]).dt.month
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag7"] = grp.shift(7)
@@ -4197,10 +3884,10 @@ def catboost_forecast_fast(train_df, val_df, target_col, random_state=42):
         if c in feature_cols
     ]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = CatBoostRegressor(
@@ -4225,11 +3912,7 @@ def catboost_forecast_fast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
-    from catboost import CatBoostRegressor
-    import pandas as pd
-    import numpy as np
-
+def catboost_forecast_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4245,7 +3928,7 @@ def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
 
         df = df.sort_values(["series_id", "day_idx"])
 
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         df["lag1"] = grp.shift(1)
         df["lag2"] = grp.shift(2)
@@ -4363,10 +4046,10 @@ def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
         if c in feature_cols
     ]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
 
     X_val = val_feat[feature_cols].fillna(0)
 
@@ -4395,11 +4078,7 @@ def catboost_forecast_optimized(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-def catboost_forecast_optimized_v2(train_df, val_df, target_col, random_state=42):
-    from catboost import CatBoostRegressor
-    import pandas as pd
-    import numpy as np
-
+def catboost_forecast_optimized_v2(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4412,7 +4091,7 @@ def catboost_forecast_optimized_v2(train_df, val_df, target_col, random_state=42
         df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]:
             df[f"lag_{lag}"] = grp.shift(lag)
@@ -4482,10 +4161,10 @@ def catboost_forecast_optimized_v2(train_df, val_df, target_col, random_state=42
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     cat_features = [
@@ -4530,11 +4209,7 @@ def catboost_forecast_optimized_v2(train_df, val_df, target_col, random_state=42
 
     return val_feat
 
-def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state=42):
-    from catboost import CatBoostRegressor
-    import pandas as pd
-    import numpy as np
-
+def catboost_forecast_fast_numeric_v2(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4547,7 +4222,7 @@ def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state
         df["week_of_year"] = df["dt"].dt.isocalendar().week.astype(int)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         for lag in [1, 2, 3, 7, 14, 21, 28, 35, 42, 56]:
             df[f"lag_{lag}"] = grp.shift(lag)
@@ -4618,10 +4293,10 @@ def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     # Wichtig:
@@ -4652,11 +4327,7 @@ def catboost_forecast_fast_numeric_v2(train_df, val_df, target_col, random_state
 
     return val_feat
 
-def hist_gradient_boosting_forecast(train_df, val_df, target_col, random_state=42):
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    import pandas as pd
-    import numpy as np
-
+def hist_gradient_boosting_forecast(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4675,7 +4346,7 @@ def hist_gradient_boosting_forecast(train_df, val_df, target_col, random_state=4
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -4773,10 +4444,10 @@ def hist_gradient_boosting_forecast(train_df, val_df, target_col, random_state=4
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = HistGradientBoostingRegressor(
@@ -4802,11 +4473,7 @@ def hist_gradient_boosting_forecast(train_df, val_df, target_col, random_state=4
 
     return val_feat
 
-def hist_gradient_boosting_forecast_optimized(train_df, val_df, target_col, random_state=42):
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    import pandas as pd
-    import numpy as np
-
+def hist_gradient_boosting_forecast_optimized(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4825,7 +4492,7 @@ def hist_gradient_boosting_forecast_optimized(train_df, val_df, target_col, rand
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1,2,3,4,5,6,7,8,9,10,14,21,28,35,42,56]
 
@@ -4919,10 +4586,10 @@ def hist_gradient_boosting_forecast_optimized(train_df, val_df, target_col, rand
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = HistGradientBoostingRegressor(
@@ -4950,11 +4617,7 @@ def hist_gradient_boosting_forecast_optimized(train_df, val_df, target_col, rand
 
     return val_feat
 
-def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
-    from sklearn.ensemble import ExtraTreesRegressor
-    import pandas as pd
-    import numpy as np
-
+def extra_trees_forecast(train_df, val_df, recovery_col, random_state=42):
     train = train_df.copy()
     val_pred = val_df.copy()
 
@@ -4973,7 +4636,7 @@ def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
         df = df.sort_values(["series_id", "day_idx"])
-        grp = df.groupby("series_id")[target_col]
+        grp = df.groupby("series_id")[recovery_col]
 
         lags = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]
 
@@ -5071,10 +4734,10 @@ def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
 
     feature_cols = [c for c in feature_cols if c in train_feat.columns]
 
-    global_fallback = train[target_col].mean()
+    global_fallback = train[recovery_col].mean()
 
     X_train = train_feat[feature_cols].fillna(0)
-    y_train = train_feat[target_col].fillna(global_fallback)
+    y_train = train_feat[recovery_col].fillna(global_fallback)
     X_val = val_feat[feature_cols].fillna(0)
 
     model = ExtraTreesRegressor(
@@ -5095,13 +4758,7 @@ def extra_trees_forecast(train_df, val_df, target_col, random_state=42):
 
     return val_feat
 
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-
-
-def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=512, lr=1e-3):
+def dlinear(train_df, val_df, recovery_col, input_size=28, epochs=20, batch_size=512, lr=1e-3):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -5113,7 +4770,7 @@ def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=5
 
         group = group.sort_values("dt")
 
-        values = group[target_col].to_numpy(np.float32)
+        values = group[recovery_col].to_numpy(np.float32)
 
         if len(values) <= input_size:
             continue
@@ -5194,7 +4851,7 @@ def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=5
 
         group = group.sort_values("dt")
 
-        history[sid] = list(group[target_col].values)
+        history[sid] = list(group[recovery_col].values)
 
     with torch.no_grad():
 
@@ -5206,15 +4863,11 @@ def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=5
 
             if len(hist) < input_size:
 
-                pred = train_df[target_col].mean()
+                pred = train_df[recovery_col].mean()
 
             else:
 
-                x = torch.tensor(
-                    hist[-input_size:],
-                    dtype=torch.float32,
-                    device=device
-                ).unsqueeze(0)
+                x = torch.tensor(hist[-input_size:], dtype=torch.float32, device=device).unsqueeze(0)
 
                 pred = model(x).item()
 
@@ -5232,9 +4885,6 @@ def dlinear(train_df, val_df, target_col, input_size=28, epochs=20, batch_size=5
     return val_pred
 
 # TODO 
-# Exponential Smoothing (Siehe oben) (Nils)
-# DLinear (Nils)
-# LSTM (Laura)
 # HistGradientBoostingRegressor
 # XGBoost Feature Optimized
 # Extra Trees

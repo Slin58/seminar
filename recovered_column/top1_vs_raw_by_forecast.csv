@@ -37,8 +37,6 @@ extra_trees_forecast,top1 recovery,stl_real,0.286,0.3605,0.2285,0.2818,198987.0
 extra_trees_forecast,raw_sales,raw_sales,0.3038,0.3679,0.2542,0.3017,198987.0
 random_forest_forecast,top1 recovery,stl_real,0.2879,0.3598,0.2323,0.2842,198987.0
 random_forest_forecast,raw_sales,raw_sales,0.3044,0.3665,0.2565,0.3027,198987.0
-lightgbm_forecast_feature_optimized_v7_recursive,top1 recovery,stl_real,0.2916,0.3518,0.2451,0.2898,198987.0
-lightgbm_forecast_feature_optimized_v7_recursive,raw_sales,raw_sales,0.0,0.0,0.0,,198987.0
 catboost_forecast_fast,top1 recovery,stl_real,0.2956,0.3607,0.2452,0.2932,198987.0
 catboost_forecast_fast,raw_sales,raw_sales,0.3127,0.3691,0.2692,0.3118,198987.0
 catboost_forecast_optimized,top1 recovery,stl_real,0.3008,0.3743,0.2439,0.2971,198987.0

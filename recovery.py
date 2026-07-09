@@ -1,12 +1,12 @@
 # recovery.py contains all recovery methods we implemented
 # recovery methods need to add column: "recovered_daily_sales" to history
 
-# TODO bei recovery: recovern von gleichen city_id, store_id, management_group_id, first_category_id, second_category_id, third_category_id, product_id ??
-
 import numpy as np
 import pandas as pd
 import os
 import time
+import lightgbm as lgb
+from xgboost import XGBRegressor
 
 from scipy.optimize import minimize
 from scipy.special import ndtr, log_ndtr
@@ -26,9 +26,9 @@ from torch.utils.data import DataLoader, TensorDataset, Dataset
 from statsmodels.tsa.statespace.structural import UnobservedComponents
 from statsmodels.tsa.seasonal import STL
 
-import lightgbm as lgb
-from xgboost import XGBRegressor
-
+from scipy.optimize import minimize
+from scipy.special import log_ndtr
+from scipy.stats import norm
 
 # Einfache Imputation Methoden:
 def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
@@ -47,12 +47,9 @@ def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple reco
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = recovered_sum + outside_slice
-
-    history["recovered_daily_sales_random_sampling"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_random_sampling'].mean():.4f}")
+
+    return recovered_daily
 
 def global_mean(history, op_sales_masked, outside_slice):  # globaler Durchschnitt
     imputed = op_sales_masked.copy()
@@ -65,12 +62,10 @@ def global_mean(history, op_sales_masked, outside_slice):  # globaler Durchschni
     # Rebuild corrected daily target
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales_global_mean"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Global mean used: {mean_value:.4f}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_global_mean'].mean():.4f}")
+    return recovered_daily
 
 def per_series_mean(history): # Durchschnitt derselben series_id - Nils
     recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
@@ -79,10 +74,7 @@ def per_series_mean(history): # Durchschnitt derselben series_id - Nils
 
     recovered_daily = recovered_daily.fillna(series_mean)
 
-    history["recovered_daily_sales_per_series_mean"] = recovered_daily
-
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_per_series_mean'].mean():.4f}")
+    return recovered_daily
 
 def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
     imputed = op_sales_masked.copy()
@@ -112,17 +104,11 @@ def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnit
     imputed[nan_mask] = series_hourly_means[series_codes][nan_mask]
     imputed = np.maximum(imputed, 0)
     imputed_count = nan_mask.sum()
+    print(f"Imputed {imputed_count:,} hourly cells")
 
     # ---------- REBUILD DAILY SALES ----------
     recovered_daily = np.nansum(imputed, axis=1) + outside_slice
-    history["recovered_daily_sales_hour_per_series_mean"] = recovered_daily
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_hour_per_series_mean'].mean():.4f}")
-
-def weekday_per_series_mean():
-    return
+    return recovered_daily
 
 def weekday_mean(history, op_sales_masked, outside_slice): # Durchschnitt gleicher Wochentage - Laura
     history["weekday"] = history["dt"].dt.weekday
@@ -155,12 +141,9 @@ def weekday_mean(history, op_sales_masked, outside_slice): # Durchschnitt gleich
 
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-
-    history["recovered_daily_sales_weekday_mean"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_mean'].mean():.4f}")
+
+    return recovered_daily
 
 def weekday_daily_mean(history):  # Durchschnitt desselben Wochentags - Nils
     recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
@@ -173,11 +156,7 @@ def weekday_daily_mean(history):  # Durchschnitt desselben Wochentags - Nils
 
     recovered_daily = recovered_daily.fillna(weekday_daily_mean)
 
-    history["recovered_daily_sales_weekday_daily_mean"] = recovered_daily
-
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_weekday_daily_mean'].mean():.4f}")
-
+    return recovered_daily
 
 def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
@@ -197,12 +176,9 @@ def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gle
     recovered_sum = np.nansum(imputed, axis=1)
 
     recovered_daily = recovered_sum + outside_slice
-
-    history["recovered_daily_sales_hourly_mean"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_hourly_mean'].mean():.4f}")
+
+    return recovered_daily
 
 
 # Moving averages: - Laura
@@ -225,11 +201,10 @@ def rolling_mean(history, op_sales_masked, outside_slice, window=7): # SMA / Rol
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_rolling_mean"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Window size used: {window}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_rolling_mean'].mean():.4f}")
+
+    return recovered_daily
 
 def exponential_moving_average(history, op_sales_masked, outside_slice, alpha=0.3): # EMA - Laura
     imputed = op_sales_masked.copy()
@@ -248,12 +223,10 @@ def exponential_moving_average(history, op_sales_masked, outside_slice, alpha=0.
 
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-
-    history["recovered_daily_sales_exponential_moving_average"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average'].mean():.4f}")
+
+    return recovered_daily
 
 def exponential_moving_average_series(history, op_sales_masked, outside_slice, alpha=0.3): # lädt ca 2,5 min 
     imputed = op_sales_masked.copy()
@@ -279,16 +252,12 @@ def exponential_moving_average_series(history, op_sales_masked, outside_slice, a
 
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-
-    history["recovered_daily_sales_exponential_moving_average_series"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_exponential_moving_average_series'].mean():.4f}")
+
+    return recovered_daily  
 
 # Zeitreihenbasierte Recovery-Methoden: - Laura
-
 
 def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare Interpolation- Laura
     # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
@@ -324,15 +293,9 @@ def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare In
     recovered_sum = np.nansum(imputed, axis=1)
 
     recovered_daily = outside_slice + recovered_sum
-
-    history["recovered_daily_sales_interpolation_linear"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(
-        f"Mean recovered sales: "
-        f"{history['recovered_daily_sales_interpolation_linear'].mean():.4f}"
-    )
+
+    return recovered_daily
 
 
 def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation  Laura
@@ -367,12 +330,10 @@ def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # S
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_interpolation_spline"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Spline order used: {order}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline'].mean():.4f}")
+    return recovered_daily
+
 
 def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
     imputed = op_sales_masked.copy()
@@ -407,12 +368,10 @@ def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_interpolation_spline_series"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Spline order used: {order}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_interpolation_spline_series'].mean():.4f}")
+
+    return recovered_daily
 
 def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
 
@@ -450,15 +409,10 @@ def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2): 
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_interpolation_polynomial"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Polynomial order used: {order}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(
-        f"Mean recovered sales: "
-        f"{history['recovered_daily_sales_interpolation_polynomial'].mean():.4f}"
-    )
+
+    return recovered_daily
 
 def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura 
 
@@ -501,11 +455,8 @@ def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothi
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_kalman_smoothing"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_kalman_smoothing'].mean():.4f}")
+    return recovered_daily
 
 def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): # - Laura 
     imputed = op_sales_masked.copy()
@@ -529,13 +480,12 @@ def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): #
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_kalman_like"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Alpha used: {alpha}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_kalman_like'].mean():.4f}")
 
-def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura
+    return recovered_daily
+
+def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura - Seasonal and Trend decomposition using Loess
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
@@ -546,10 +496,7 @@ def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura
         s = pd.Series(imputed[:, h]).astype(float)
 
         # STL kann keine NaNs direkt verarbeiten
-        s_filled = s.interpolate(
-            method="linear",
-            limit_direction="both"
-        )
+        s_filled = s.interpolate(method="linear", limit_direction="both")
 
         fallback = s.mean()
         s_filled = s_filled.fillna(fallback)
@@ -573,12 +520,10 @@ def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_stl_real"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"STL period used: {period}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_stl_real'].mean():.4f}")
+
+    return recovered_daily
 
 def stl_based(history, op_sales_masked, outside_slice, period=7):
     """
@@ -631,12 +576,10 @@ def stl_based(history, op_sales_masked, outside_slice, period=7):
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_stl_based"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Period used: {period}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_stl_based'].mean():.4f}")
+
+    return recovered_daily
 
 # ML-basierte Recovery-Methoden: - Laura
 
@@ -659,12 +602,10 @@ def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura K
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_knn"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"KNN neighbors used: {n_neighbors}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_knn'].mean():.4f}")
+
+    return recovered_daily
 
 def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
 
@@ -784,13 +725,9 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_random_forest"] = recovered_daily
-
-    print("\n=== Random Forest Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_random_forest'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
 
 def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
 
@@ -910,24 +847,11 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_lightgbm"] = recovered_daily
-
-    print("\n=== LightGBM Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_lightgbm'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
-def lightgbm_v2(history, op_sales_masked, outside_slice,
-                max_train_rows=1_500_000,
-                batch_size=500_000,
-                random_state=42):
+    return recovered_daily
 
-    import time
-    import numpy as np
-    import pandas as pd
-    import lightgbm as lgb
-
+def lightgbm_v2(history, op_sales_masked, outside_slice, max_train_rows=1_500_000, batch_size=500_000, random_state=42):
     print("\n=== LightGBM Recovery v2 ===")
 
     start_total = time.time()
@@ -1104,13 +1028,7 @@ def lightgbm_v2(history, op_sales_masked, outside_slice,
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_lightgbm_v2"] = recovered_daily
-
-    print("\n=== LightGBM Recovery v2 Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_lightgbm_v2'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
 
     return recovered_daily
 
@@ -1232,13 +1150,9 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_xgboost"] = recovered_daily
-
-    print("\n=== XGBoost Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_xgboost'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
 
 def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
 
@@ -1269,20 +1183,11 @@ def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_iterative"] = recovered_daily
-
-    print("\n=== Iterative Imputation Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_iterative'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
 
 def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, random_state=42): #lädt über 5 Stunden dass hier: === Running recovery method: iterative_improved at 2026-06-12 14:42:30.694867 === === Improved Iterative Imputation Recovery === Starting iterative imputation... [IterativeImputer] Completing matrix with shape (4500000, 16) [IterativeImputer] Change: 14.01937198638916, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 4.824539661407471, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 2.6994433403015137, scaled tolerance: 0.01690000109374523
-    import time
-    from sklearn.experimental import enable_iterative_imputer  # noqa: F401
-    from sklearn.impute import IterativeImputer
-    from sklearn.ensemble import ExtraTreesRegressor
-
     print("\n=== Improved Iterative Imputation Recovery ===")
     start_total = time.time()
 
@@ -1293,23 +1198,10 @@ def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, rand
     hour_means = np.nanmean(imputed, axis=0)
     initial = np.where(np.isnan(imputed), hour_means, imputed)
 
-    estimator = ExtraTreesRegressor(
-        n_estimators=50,
-        max_depth=12,
-        min_samples_leaf=10,
-        n_jobs=-1,
-        random_state=random_state
-    )
+    estimator = ExtraTreesRegressor(n_estimators=50, max_depth=12, min_samples_leaf=10, n_jobs=-1, random_state=random_state)
 
-    imputer = IterativeImputer(
-        estimator=estimator,
-        max_iter=max_iter,
-        initial_strategy="mean",
-        imputation_order="roman",
-        random_state=random_state,
-        skip_complete=True,
-        verbose=1
-    )
+    imputer = IterativeImputer(estimator=estimator, max_iter=max_iter, initial_strategy="mean", imputation_order="roman", 
+                               random_state=random_state, skip_complete=True, verbose=1)
 
     print("Starting iterative imputation...")
     imputed_new = imputer.fit_transform(imputed)
@@ -1323,19 +1215,14 @@ def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, rand
     recovered_sum = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_iterative_improved"] = recovered_daily
-
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_iterative_improved'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
+
 
 # Spezifische Demandrevovery Modelle: - Nils
 
-def lost_sales_model(history): # was ist das? Laut ChatGPT ein Überbegriff für Modelle, die versuchen verlorene Umsätze zu schätzen, z.B. mit Random Forest oder XGBoost. 
-    return
-
-def tobit_model(history): # TODO
+def tobit(history): # TODO
     # ---------- FEATURES ----------
     hours_matrix = np.vstack(history["hours_sale"].values)
 
@@ -1410,27 +1297,19 @@ def tobit_model(history): # TODO
     lambda_  = pdf_a / np.maximum(cdf_a, 1e-12)
 
     e_y_star = mu_hat + sigma_hat * lambda_
-    history["recovered_daily_sales_tobit"] = np.where(is_censored, np.maximum(e_y_star, 0), y)
+    recovered_daily = np.where(is_censored, np.maximum(e_y_star, 0), y)
 
     print(f"Converged: {result.success} | {result.message}")
     print(f"sigma_hat: {sigma_hat:.4f}")
-    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:  {history['recovered_daily_sales_tobit'].mean():.4f}")
+    return recovered_daily
 
-def tobit_model_improved(history):  # Tobit / censored regression for stockout recovery - Laura === Running recovery method: tobit_improved at 2026-06-12 19:46:54.791141 ===
+def tobit_improved(history):  # Tobit / censored regression for stockout recovery - Laura === Running recovery method: tobit_improved at 2026-06-12 19:46:54.791141 ===
 # Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT
 # sigma_hat: 0.1123
 # Mean raw sale_amount:  0.9986
 # Mean recovered sales:  0.5498
 # Gespeichert: [0.  0.  5.3 ... 4.2 2.2 2.1]
 # Verarbeitungszeit:  1:10:42.476935
-
-    import numpy as np
-    import pandas as pd
-    from scipy.optimize import minimize
-    from scipy.special import log_ndtr
-    from scipy.stats import norm
-    from sklearn.preprocessing import StandardScaler
 
     print("\n=== Tobit Recovery Model ===")
 
@@ -1533,16 +1412,8 @@ def tobit_model_improved(history):  # Tobit / censored regression for stockout r
     params_init = np.append(beta_init, np.log(sigma_init))
 
     # ---------- OPTIMIZATION ----------
-    result = minimize(
-        neg_log_likelihood,
-        params_init,
-        method="L-BFGS-B",
-        options={
-            "maxiter": 3000,
-            "ftol": 1e-7,
-            "maxfun": 50000
-        },
-    )
+    result = minimize(neg_log_likelihood, params_init, method="L-BFGS-B",
+        options={"maxiter": 3000, "ftol": 1e-7, "maxfun": 50000},)
 
     beta_hat = result.x[:-1]
     sigma_hat = float(np.exp(result.x[-1]))
@@ -1560,23 +1431,17 @@ def tobit_model_improved(history):  # Tobit / censored regression for stockout r
 
     expected_if_censored = mu_hat + sigma_hat * lambda_
 
-    recovered = np.where(
-        is_censored,
-        np.maximum(expected_if_censored, y),
-        y
-    )
-
-    history["recovered_daily_sales_tobit"] = recovered
+    recovered_daily = np.where(is_censored, np.maximum(expected_if_censored, y), y)
 
     print(f"Converged: {result.success} | {result.message}")
     print(f"sigma_hat: {sigma_hat:.4f}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_tobit'].mean():.4f}")
 
     if not result.success:
         print("Warning: Tobit optimization did not fully converge.")
 
-def bayesian_model_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
+    return recovered_daily
+
+def bayesian_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
     # ---------- FEATURES (identisch zu Tobit) ----------
     hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
@@ -1668,16 +1533,14 @@ def bayesian_model_old(history):  # Bayesisches Regressionsmodell mit Metropolis
     lambda_ = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
 
     e_y_star  = mu_hat + sigma_hat * lambda_
-    recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
-
-    history["recovered_daily_sales_bayesian"] = recovered
+    recovered_daily = np.where(is_censored, np.maximum(e_y_star, 0), y)
 
     print(f"Acceptance rate: {acceptance_rate:.3f} (ideal: 0.2–0.5)")
     print(f"sigma_hat: {sigma_hat:.4f}")
-    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
+
+    return recovered_daily
     
-def bayesian_model(history):  # Bayesisches Modell mit NUTS
+def bayesian(history):  # Bayesisches Modell mit NUTS
     # ---------- FEATURES (identisch zu Tobit) ----------
     hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
@@ -1834,17 +1697,11 @@ def bayesian_model(history):  # Bayesisches Modell mit NUTS
     alpha    = mu_hat / sigma_hat
     lambda_  = norm.pdf(alpha) / np.maximum(norm.cdf(alpha), 1e-12)
     e_y_star = mu_hat + sigma_hat * lambda_
-    recovered = np.where(is_censored, np.maximum(e_y_star, 0), y)
-
-    history["recovered_daily_sales_bayesian"] = recovered
+    recovered_daily = np.where(is_censored, np.maximum(e_y_star, 0), y)
 
     print(f"sigma_hat: {sigma_hat:.4f}")
-    print(f"Mean raw sale_amount:  {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:  {history['recovered_daily_sales_bayesian'].mean():.4f}")
 
-def inventory_aware_model(history): # inventory aware model is a forecasting method
-    return
-
+    return recovered_daily
 
 # Deep Learning basierte Recovery-Methoden: - Nils 
 
@@ -1945,11 +1802,10 @@ def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20
     # ── Rebuild daily (same as global_mean / transformer) ─────────────────────
     recovered_sum   = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales_autoencoder"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount:      {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:      {history['recovered_daily_sales_autoencoder'].mean():.4f}")
+    return recovered_daily
+
 
 #def transformer(history): # SAITS, BRITS, GRIN, CSDI
 
@@ -2088,14 +1944,10 @@ def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_si
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_transformer"] = recovered_daily
-
-    print("\n=== Transformer Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Epochs used: {epochs}")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_transformer'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+
+    return recovered_daily
 
 def transformer_old2(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):
 
@@ -2282,14 +2134,9 @@ def transformer_old2(history, op_sales_masked, outside_slice, epochs=20, batch_s
     recovered_sum    = np.nansum(imputed, axis=1)
     recovered_daily  = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_transformer"] = recovered_daily
-
-    print("\n=== Transformer Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
     print(f"Epochs used: {epochs}")
-    print(f"Mean raw sale_amount:    {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:    {history['recovered_daily_sales_transformer'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+    return recovered_daily
 
 def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_size=512, random_state=42):
     """
@@ -2376,11 +2223,7 @@ def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_s
                 batch_first=True,
                 norm_first=True,        # Pre-LN: more stable training
             )
-            self.encoder = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=num_layers,
-                enable_nested_tensor=False,
-            )
+            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False,)
 
             self.head = nn.Sequential(
                 nn.LayerNorm(d_model),
@@ -2530,13 +2373,8 @@ def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_s
     imputed = np.maximum(imputed, 0)                        # no negative sales
     recovered_daily = outside_slice + imputed.sum(axis=1)
 
-    history["recovered_daily_sales_transformer"] = recovered_daily
-
-    print("\n=== Transformer Recovery Finished ===")
     print(f"Imputed hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
-    print(f"Mean raw sale_amount    : {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales    : {history['recovered_daily_sales_transformer'].mean():.4f}")
-    print(f"Total runtime           : {time.time() - start_total:.2f}s")
+    return recovered_daily
 
 def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4, batch_size=256, device=None):
     """
@@ -2550,15 +2388,13 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
 
     Writes history["recovered_daily_sales_transformer"] and returns imputed.
     """
-    import torch, torch.nn as nn
-    from torch.utils.data import TensorDataset, DataLoader
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     N, H = op_sales_masked.shape   # (N_rows, 16 hours)
 
-    # ── 1. Build covariates matrix  (N, H, C) ────────────────────────────────
+    # 1. Build covariates matrix  (N, H, C)
     # Broadcast daily scalars to every hour slot so each token is self-contained
     hour_idx   = np.tile(np.arange(H), (N, 1)).astype(np.float32) / (H - 1)  # (N,16) normalised 0-1
     discount   = np.repeat(history["discount"].values[:, None],          H, axis=1).astype(np.float32)
@@ -2584,7 +2420,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     ], axis=-1)                                      # (N, 16, 7)
     C = covariates.shape[-1]
 
-    # ── 2. Normalise sales on observed hours only ─────────────────────────────
+    # 2. Normalise sales on observed hours only
     observed_vals = op_sales_masked[~np.isnan(op_sales_masked)]
     sale_mean = observed_vals.mean()
     sale_std  = observed_vals.std() + 1e-8
@@ -2595,7 +2431,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     # Replace NaN with 0 for tensor input (model sees mask, not NaN)
     sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
 
-    # ── 3. Tensors ────────────────────────────────────────────────────────────
+    # 3. Tensors
     T_sales = torch.tensor(sales_input,    dtype=torch.float32)   # (N, H)
     T_cov   = torch.tensor(covariates,     dtype=torch.float32)   # (N, H, C)
     T_obs   = torch.tensor(obs_mask,       dtype=torch.bool)      # (N, H)
@@ -2604,7 +2440,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     dataset = TensorDataset(T_sales, T_cov, T_obs, T_tgt)
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # ── 4. Model ──────────────────────────────────────────────────────────────
+    # 4. Model
     class HourlyTransformer(nn.Module):
         def __init__(self):
             super().__init__()
@@ -2636,7 +2472,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # ── 5. Train ──────────────────────────────────────────────────────────────
+    # 5. Train 
     print(f"Training transformer on {device}  |  params: {sum(p.numel() for p in model.parameters()):,}")
     for epoch in range(1, epochs + 1):
         model.train()
@@ -2645,7 +2481,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
             sale, cov, obs, tgt = sale.to(device), cov.to(device), obs.to(device), tgt.to(device)
             pred = model(sale, cov)             # (B, H)
 
-            # ── Censored loss: only backprop through observed hours ──────────
+            # Censored loss: only backprop through observed hours
             if obs.sum() == 0:
                 continue
             loss = nn.functional.huber_loss(pred[obs], tgt[obs], delta=1.0)
@@ -2662,7 +2498,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
         if epoch % 5 == 0 or epoch == 1:
             print(f"  Epoch {epoch:02d}/{epochs}  loss={epoch_loss/max(epoch_tokens,1):.5f}")
 
-    # ── 6. Inference: fill NaN cells ─────────────────────────────────────────
+    # 6. Inference: fill NaN cells
     model.eval()
     all_preds = []
     inf_loader = DataLoader(TensorDataset(T_sales, T_cov), batch_size=batch_size, shuffle=False)
@@ -2680,17 +2516,14 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     imputed_count = nan_mask.sum()
     imputed[nan_mask] = preds_denorm[nan_mask]
 
-    # ── 7. Rebuild daily totals (same as global_mean) ─────────────────────────
+    # 7. Rebuild daily totals 
     recovered_sum   = np.nansum(imputed, axis=1)
     recovered_daily = outside_slice + recovered_sum
-    history["recovered_daily_sales_transformer"] = recovered_daily
 
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount:     {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales:     {history['recovered_daily_sales_transformer'].mean():.4f}")
+    return recovered_daily
 
-
-def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
+def diffusion(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
 
     print("\n=== Diffusion-like Recovery ===")
 
@@ -2749,18 +2582,11 @@ def diffusion_model(history, op_sales_masked, outside_slice, noise_scale=0.1, n_
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_diffusion"] = recovered_daily
-
-    print("\n=== Diffusion-like Recovery Finished ===")
     print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_diffusion'].mean():.4f}")
-    print(f"Total runtime: {time.time() - start_total:.2f} seconds")
+    return recovered_daily
 
 
-# TODO 
 # DLinear (Nils)
-
 class MovingAvg(nn.Module):
     """
     Moving average block to highlight the trend component.
@@ -2891,10 +2717,8 @@ class RecoveryDataset(Dataset):
         x[mask] = 0.0
 
         return (torch.from_numpy(x), torch.from_numpy(target))
-    
 
 def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256, lr=1e-3, mask_prob=0.30, device=None, random_state=42):
-    print(op_sales_masked.shape) # TODO
     hourly_sales = op_sales.copy()
 
     # Keep only complete days
@@ -2902,8 +2726,6 @@ def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256,
 
     train_data = hourly_sales[complete_days]
         
-    train_dataset = RecoveryDataset(train_data, mask_prob=0.30)
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -3001,10 +2823,5 @@ def dlinear(history, op_sales, op_sales_masked, outside_slice):
 
     recovered_daily = outside_slice + recovered_sum
 
-    history["recovered_daily_sales_dlinear"] = recovered_daily
-
     print(f"Imputed {nan_mask.sum():,} hourly cells")
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
-    print(f"Mean recovered sales: {history['recovered_daily_sales_dlinear'].mean():.4f}")
-
-    return imputed
+    return recovered_daily

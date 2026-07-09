@@ -43,14 +43,14 @@ print("Forecasting")
 forecast_models = {
     #"global_mean_forecast": forecast.global_mean,
     #"seasonal_naive_forecast": forecast.seasonal_naive,
-    #"rolling_28d_forecast": forecast.rolling_28d,
+    "rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
     #"double_exponential_smoothing": forecast.double_exponential_smoothing,
     #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
     #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
-    #"arima_forecast": forecast.arima, # TODO lädt zu lange -> optimieren
+    #"arima_forecast": forecast.arima, # 
     #"arima_like_fast": forecast.arima_like_fast,
     #"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
     #"lightgbm_forecast": forecast.lightgbm_forecast,
@@ -73,7 +73,7 @@ forecast_models = {
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
-    "lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
+    #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
     #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
@@ -86,10 +86,8 @@ forecast_models = {
     #"dlinear_forecast": forecast.dlinear
     }
 
-# TODO double_exponential_smoothing, triple_exponential_smoothing, holt_winters_exp_forecast
-# LSTM, catboost, cnn
-
-recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
+recovery_models = ["recovered_daily_sales_per_series_mean"] # if list empty all recovery methods are used
+#recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
 # ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen
@@ -134,12 +132,8 @@ for forecast_name, forecast_func in forecast_models.items():
 
             current_time = datetime.now()
 
-            val_pred = forecast_func(
-                train_df=train_r,
-                val_df=val_r,
-                target_col=col
-            )
-
+            val_pred = forecast_func(train_df=train_r, val_df=val_r, recovery_col=col) 
+            
             # ------------------------------------------------------------ 
             # Prediction speichern für spätere Ensembles
             # ------------------------------------------------------------
