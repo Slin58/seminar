@@ -1,5 +1,5 @@
 # recovery.py contains all recovery methods we implemented
-# recovery methods need to add column: "recovered_daily_sales" to history
+# recovery methods need to add column: "recovered_daily_sales" to train
 
 import numpy as np
 import pandas as pd
@@ -31,7 +31,7 @@ from scipy.special import log_ndtr
 from scipy.stats import norm
 
 # Einfache Imputation Methoden:
-def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
+def random_sampling(train, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
     imputed = op_sales_masked.copy()
     imputed_count = 0
     for h in range(16):
@@ -51,7 +51,7 @@ def random_sampling(history, op_sales_masked, outside_slice, rng): # Simple reco
 
     return recovered_daily
 
-def global_mean(history, op_sales_masked, outside_slice):  # globaler Durchschnitt
+def global_mean(train, op_sales_masked, outside_slice):  # globaler Durchschnitt
     imputed = op_sales_masked.copy()
     # Durchschnitt über alle sichtbaren Stundenwerte
     mean_value = np.nanmean(imputed)
@@ -67,20 +67,20 @@ def global_mean(history, op_sales_masked, outside_slice):  # globaler Durchschni
     print(f"Global mean used: {mean_value:.4f}")
     return recovered_daily
 
-def per_series_mean(history): # Durchschnitt derselben series_id - Nils
-    recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
+def per_series_mean(train): # Durchschnitt derselben series_id - Nils
+    recovered_daily = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
 
-    series_mean = recovered_daily.groupby(history["series_id"]).transform("mean")
+    series_mean = recovered_daily.groupby(train["series_id"]).transform("mean")
 
     recovered_daily = recovered_daily.fillna(series_mean)
 
     return recovered_daily
 
-def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
+def hour_per_series_mean(train, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
     imputed = op_sales_masked.copy()
 
     # ---------- SERIES IDS ----------
-    series_codes, unique_series = pd.factorize(history["series_id"], sort=False)
+    series_codes, unique_series = pd.factorize(train["series_id"], sort=False)
     n_series = len(unique_series)
     n_rows, n_hours = imputed.shape
 
@@ -110,11 +110,11 @@ def hour_per_series_mean(history, op_sales_masked, outside_slice): # Durchschnit
     recovered_daily = np.nansum(imputed, axis=1) + outside_slice
     return recovered_daily
 
-def weekday_mean(history, op_sales_masked, outside_slice): # Durchschnitt gleicher Wochentage - Laura
-    history["weekday"] = history["dt"].dt.weekday
+def weekday_mean(train, op_sales_masked, outside_slice): # Durchschnitt gleicher Wochentage - Laura
+    train["weekday"] = train["dt"].dt.weekday
 
     imputed = op_sales_masked.copy()
-    weekdays = history["weekday"].values
+    weekdays = train["weekday"].values
     n_hours = imputed.shape[1]
 
     # global fallback pro Stunde
@@ -145,11 +145,11 @@ def weekday_mean(history, op_sales_masked, outside_slice): # Durchschnitt gleich
 
     return recovered_daily
 
-def weekday_daily_mean(history):  # Durchschnitt desselben Wochentags - Nils
-    recovered_daily = history["sale_amount"].where(history["is_censored"] == 0, np.nan)
+def weekday_daily_mean(train):  # Durchschnitt desselben Wochentags - Nils
+    recovered_daily = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
 
-    dayofweek = pd.to_datetime(history["dt"]).dt.dayofweek
-    hour = pd.to_datetime(history["dt"]).dt.hour
+    dayofweek = pd.to_datetime(train["dt"]).dt.dayofweek
+    hour = pd.to_datetime(train["dt"]).dt.hour
 
     weekday_daily_mean_key = dayofweek.astype(str) + "_" + hour.astype(str)
     weekday_daily_mean = recovered_daily.groupby(weekday_daily_mean_key).transform("mean")
@@ -158,7 +158,7 @@ def weekday_daily_mean(history):  # Durchschnitt desselben Wochentags - Nils
 
     return recovered_daily
 
-def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
+def hourly_mean(train, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
     imputed = op_sales_masked.copy()
 
     global_hourly_means = np.nanmean(imputed, axis=0)
@@ -182,7 +182,7 @@ def hourly_mean(history, op_sales_masked, outside_slice): # Durchschnitt der gle
 
 
 # Moving averages: - Laura
-def rolling_mean(history, op_sales_masked, outside_slice, window=7): # SMA / Rolling Mean - Laura
+def rolling_mean(train, op_sales_masked, outside_slice, window=7): # SMA / Rolling Mean - Laura
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
@@ -206,7 +206,7 @@ def rolling_mean(history, op_sales_masked, outside_slice, window=7): # SMA / Rol
 
     return recovered_daily
 
-def exponential_moving_average(history, op_sales_masked, outside_slice, alpha=0.3): # EMA - Laura
+def exponential_moving_average(train, op_sales_masked, outside_slice, alpha=0.3): # EMA - Laura
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
@@ -228,11 +228,11 @@ def exponential_moving_average(history, op_sales_masked, outside_slice, alpha=0.
 
     return recovered_daily
 
-def exponential_moving_average_series(history, op_sales_masked, outside_slice, alpha=0.3): # lädt ca 2,5 min 
+def exponential_moving_average_series(train, op_sales_masked, outside_slice, alpha=0.3): # lädt ca 2,5 min 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
-    series_ids = history["series_id"].values
+    series_ids = train["series_id"].values
     n_hours = imputed.shape[1]
 
     for h in range(n_hours):
@@ -259,7 +259,7 @@ def exponential_moving_average_series(history, op_sales_masked, outside_slice, a
 
 # Zeitreihenbasierte Recovery-Methoden: - Laura
 
-def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare Interpolation- Laura
+def interpolation_linear(train, op_sales_masked, outside_slice):  # Lineare Interpolation- Laura
     # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
 
     imputed = op_sales_masked.copy()
@@ -298,7 +298,7 @@ def interpolation_linear(history, op_sales_masked, outside_slice):  # Lineare In
     return recovered_daily
 
 
-def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation  Laura
+def interpolation_spline(train, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation  Laura
 
     imputed = op_sales_masked.copy()
 
@@ -335,11 +335,11 @@ def interpolation_spline(history, op_sales_masked, outside_slice, order=3):  # S
     return recovered_daily
 
 
-def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
+def interpolation_spline_series(train, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
-    series_ids = history["series_id"].values
+    series_ids = train["series_id"].values
     n_hours = imputed.shape[1]
 
     for h in range(n_hours):
@@ -373,7 +373,7 @@ def interpolation_spline_series(history, op_sales_masked, outside_slice, order=3
 
     return recovered_daily
 
-def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
+def interpolation_polynomial(train, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
 
     imputed = op_sales_masked.copy()
 
@@ -414,7 +414,7 @@ def interpolation_polynomial(history, op_sales_masked, outside_slice, order=2): 
 
     return recovered_daily
 
-def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura 
+def kalman_smoothing(train, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura 
 
     imputed = op_sales_masked.copy()
 
@@ -458,7 +458,7 @@ def kalman_smoothing(history, op_sales_masked, outside_slice):  # Kalman Smoothi
     print(f"Imputed {imputed_count:,} hourly cells")
     return recovered_daily
 
-def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): # - Laura 
+def kalman_like_smoothing(train, op_sales_masked, outside_slice, alpha=0.2): # - Laura 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
@@ -485,7 +485,7 @@ def kalman_like_smoothing(history, op_sales_masked, outside_slice, alpha=0.2): #
 
     return recovered_daily
 
-def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura - Seasonal and Trend decomposition using Loess
+def stl_real(train, op_sales_masked, outside_slice, period=7): # Laura - Seasonal and Trend decomposition using Loess
 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
@@ -525,7 +525,7 @@ def stl_real(history, op_sales_masked, outside_slice, period=7): # Laura - Seaso
 
     return recovered_daily
 
-def stl_based(history, op_sales_masked, outside_slice, period=7):
+def stl_based(train, op_sales_masked, outside_slice, period=7):
     """
     STL-nahe Imputation:
     - nutzt Rolling Median als Trend
@@ -536,7 +536,7 @@ def stl_based(history, op_sales_masked, outside_slice, period=7):
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
-    weekdays = history["dt"].dt.weekday.values
+    weekdays = train["dt"].dt.weekday.values
     n_hours = imputed.shape[1]
 
     for h in range(n_hours):
@@ -583,7 +583,7 @@ def stl_based(history, op_sales_masked, outside_slice, period=7):
 
 # ML-basierte Recovery-Methoden: - Laura
 
-def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura KNN-Imputation - Laura
+def knn(train, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura KNN-Imputation - Laura
 
     imputed = op_sales_masked.copy()
 
@@ -607,7 +607,7 @@ def knn(history, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura K
 
     return recovered_daily
 
-def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
+def random_forest(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
 
     print("\n=== Random Forest Recovery ===")
 
@@ -628,16 +628,16 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
 
     X_obs = pd.DataFrame({
         "hour": hours_obs,
-        "series_id": history["series_id"].values[rows_obs],
-        "day_idx": history["day_idx"].values[rows_obs],
-        "weekday": history["dt"].dt.weekday.values[rows_obs],
-        "discount": history["discount"].values[rows_obs],
-        "holiday_flag": history["holiday_flag"].values[rows_obs],
-        "activity_flag": history["activity_flag"].values[rows_obs],
-        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": history["precpt"].fillna(0).values[rows_obs],
+        "series_id": train["series_id"].values[rows_obs],
+        "day_idx": train["day_idx"].values[rows_obs],
+        "weekday": train["dt"].dt.weekday.values[rows_obs],
+        "discount": train["discount"].values[rows_obs],
+        "holiday_flag": train["holiday_flag"].values[rows_obs],
+        "activity_flag": train["activity_flag"].values[rows_obs],
+        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": train["precpt"].fillna(0).values[rows_obs],
     })
 
     y_obs = imputed[rows_obs, hours_obs]
@@ -697,16 +697,16 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
 
         X_missing = pd.DataFrame({
             "hour": batch_hours,
-            "series_id": history["series_id"].values[batch_rows],
-            "day_idx": history["day_idx"].values[batch_rows],
-            "weekday": history["dt"].dt.weekday.values[batch_rows],
-            "discount": history["discount"].values[batch_rows],
-            "holiday_flag": history["holiday_flag"].values[batch_rows],
-            "activity_flag": history["activity_flag"].values[batch_rows],
-            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": history["precpt"].fillna(0).values[batch_rows],
+            "series_id": train["series_id"].values[batch_rows],
+            "day_idx": train["day_idx"].values[batch_rows],
+            "weekday": train["dt"].dt.weekday.values[batch_rows],
+            "discount": train["discount"].values[batch_rows],
+            "holiday_flag": train["holiday_flag"].values[batch_rows],
+            "activity_flag": train["activity_flag"].values[batch_rows],
+            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": train["precpt"].fillna(0).values[batch_rows],
         })
 
         preds = model.predict(X_missing)
@@ -729,7 +729,7 @@ def random_forest(history, op_sales_masked, outside_slice, max_train_rows=500_00
 
     return recovered_daily
 
-def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
+def lightgbm(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
 
     print("\n=== LightGBM Recovery ===")
 
@@ -749,16 +749,16 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
 
     X_obs = pd.DataFrame({
         "hour": hours_obs,
-        "series_id": history["series_id"].values[rows_obs],
-        "day_idx": history["day_idx"].values[rows_obs],
-        "weekday": history["dt"].dt.weekday.values[rows_obs],
-        "discount": history["discount"].values[rows_obs],
-        "holiday_flag": history["holiday_flag"].values[rows_obs],
-        "activity_flag": history["activity_flag"].values[rows_obs],
-        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": history["precpt"].fillna(0).values[rows_obs],
+        "series_id": train["series_id"].values[rows_obs],
+        "day_idx": train["day_idx"].values[rows_obs],
+        "weekday": train["dt"].dt.weekday.values[rows_obs],
+        "discount": train["discount"].values[rows_obs],
+        "holiday_flag": train["holiday_flag"].values[rows_obs],
+        "activity_flag": train["activity_flag"].values[rows_obs],
+        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": train["precpt"].fillna(0).values[rows_obs],
     })
 
     y_obs = imputed[rows_obs, hours_obs]
@@ -819,16 +819,16 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
 
         X_missing = pd.DataFrame({
             "hour": batch_hours,
-            "series_id": history["series_id"].values[batch_rows],
-            "day_idx": history["day_idx"].values[batch_rows],
-            "weekday": history["dt"].dt.weekday.values[batch_rows],
-            "discount": history["discount"].values[batch_rows],
-            "holiday_flag": history["holiday_flag"].values[batch_rows],
-            "activity_flag": history["activity_flag"].values[batch_rows],
-            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": history["precpt"].fillna(0).values[batch_rows],
+            "series_id": train["series_id"].values[batch_rows],
+            "day_idx": train["day_idx"].values[batch_rows],
+            "weekday": train["dt"].dt.weekday.values[batch_rows],
+            "discount": train["discount"].values[batch_rows],
+            "holiday_flag": train["holiday_flag"].values[batch_rows],
+            "activity_flag": train["activity_flag"].values[batch_rows],
+            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": train["precpt"].fillna(0).values[batch_rows],
         })
 
         preds = model.predict(X_missing)
@@ -851,7 +851,7 @@ def lightgbm(history, op_sales_masked, outside_slice, max_train_rows=500_000, ba
 
     return recovered_daily
 
-def lightgbm_v2(history, op_sales_masked, outside_slice, max_train_rows=1_500_000, batch_size=500_000, random_state=42):
+def lightgbm_v2(train, op_sales_masked, outside_slice, max_train_rows=1_500_000, batch_size=500_000, random_state=42):
     print("\n=== LightGBM Recovery v2 ===")
 
     start_total = time.time()
@@ -865,26 +865,26 @@ def lightgbm_v2(history, op_sales_masked, outside_slice, max_train_rows=1_500_00
     # ------------------------------------------------------------
     # Kontext-Features pro Tageszeile
     # ------------------------------------------------------------
-    dt = pd.to_datetime(history["dt"])
+    dt = pd.to_datetime(train["dt"])
 
     visible_sum = np.nansum(op_sales_masked, axis=1)
     visible_count = np.sum(~np.isnan(op_sales_masked), axis=1)
     visible_mean = visible_sum / np.maximum(visible_count, 1)
 
-    daily_raw = history["sale_amount"].values if "sale_amount" in history.columns else np.zeros(len(history))
+    daily_raw = train["sale_amount"].values if "sale_amount" in train.columns else np.zeros(len(train))
 
     base = pd.DataFrame({
-        "series_id": history["series_id"].values,
-        "day_idx": history["day_idx"].values,
+        "series_id": train["series_id"].values,
+        "day_idx": train["day_idx"].values,
         "weekday": dt.dt.weekday.values,
         "month": dt.dt.month.values,
-        "discount": history["discount"].values,
-        "holiday_flag": history["holiday_flag"].values,
-        "activity_flag": history["activity_flag"].values,
-        "avg_temperature": history["avg_temperature"].fillna(0).values,
-        "avg_humidity": history["avg_humidity"].fillna(0).values,
-        "avg_wind_level": history["avg_wind_level"].fillna(0).values,
-        "precpt": history["precpt"].fillna(0).values,
+        "discount": train["discount"].values,
+        "holiday_flag": train["holiday_flag"].values,
+        "activity_flag": train["activity_flag"].values,
+        "avg_temperature": train["avg_temperature"].fillna(0).values,
+        "avg_humidity": train["avg_humidity"].fillna(0).values,
+        "avg_wind_level": train["avg_wind_level"].fillna(0).values,
+        "precpt": train["precpt"].fillna(0).values,
         "outside_slice": outside_slice,
         "visible_sum": visible_sum,
         "visible_count": visible_count,
@@ -901,8 +901,8 @@ def lightgbm_v2(history, op_sales_masked, outside_slice, max_train_rows=1_500_00
     ]
 
     for col in optional_cols:
-        if col in history.columns:
-            base[col] = history[col].values
+        if col in train.columns:
+            base[col] = train[col].values
 
     base["weekday_sin"] = np.sin(2 * np.pi * base["weekday"] / 7)
     base["weekday_cos"] = np.cos(2 * np.pi * base["weekday"] / 7)
@@ -1032,7 +1032,7 @@ def lightgbm_v2(history, op_sales_masked, outside_slice, max_train_rows=1_500_00
 
     return recovered_daily
 
-def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
+def xgboost(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
 
     print("\n=== XGBoost Recovery ===")
 
@@ -1052,16 +1052,16 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
 
     X_obs = pd.DataFrame({
         "hour": hours_obs,
-        "series_id": history["series_id"].values[rows_obs],
-        "day_idx": history["day_idx"].values[rows_obs],
-        "weekday": history["dt"].dt.weekday.values[rows_obs],
-        "discount": history["discount"].values[rows_obs],
-        "holiday_flag": history["holiday_flag"].values[rows_obs],
-        "activity_flag": history["activity_flag"].values[rows_obs],
-        "avg_temperature": history["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": history["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": history["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": history["precpt"].fillna(0).values[rows_obs],
+        "series_id": train["series_id"].values[rows_obs],
+        "day_idx": train["day_idx"].values[rows_obs],
+        "weekday": train["dt"].dt.weekday.values[rows_obs],
+        "discount": train["discount"].values[rows_obs],
+        "holiday_flag": train["holiday_flag"].values[rows_obs],
+        "activity_flag": train["activity_flag"].values[rows_obs],
+        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
+        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
+        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
+        "precpt": train["precpt"].fillna(0).values[rows_obs],
     })
 
     y_obs = imputed[rows_obs, hours_obs]
@@ -1122,16 +1122,16 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
 
         X_missing = pd.DataFrame({
             "hour": batch_hours,
-            "series_id": history["series_id"].values[batch_rows],
-            "day_idx": history["day_idx"].values[batch_rows],
-            "weekday": history["dt"].dt.weekday.values[batch_rows],
-            "discount": history["discount"].values[batch_rows],
-            "holiday_flag": history["holiday_flag"].values[batch_rows],
-            "activity_flag": history["activity_flag"].values[batch_rows],
-            "avg_temperature": history["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": history["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": history["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": history["precpt"].fillna(0).values[batch_rows],
+            "series_id": train["series_id"].values[batch_rows],
+            "day_idx": train["day_idx"].values[batch_rows],
+            "weekday": train["dt"].dt.weekday.values[batch_rows],
+            "discount": train["discount"].values[batch_rows],
+            "holiday_flag": train["holiday_flag"].values[batch_rows],
+            "activity_flag": train["activity_flag"].values[batch_rows],
+            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
+            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
+            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
+            "precpt": train["precpt"].fillna(0).values[batch_rows],
         })
 
         preds = model.predict(X_missing)
@@ -1154,7 +1154,7 @@ def xgboost(history, op_sales_masked, outside_slice, max_train_rows=500_000, bat
 
     return recovered_daily
 
-def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
+def iterative(train, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
 
     print("\n=== Iterative Imputation Recovery ===")
 
@@ -1187,7 +1187,7 @@ def iterative(history, op_sales_masked, outside_slice, max_iter=5, random_state=
 
     return recovered_daily
 
-def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, random_state=42): #lädt über 5 Stunden dass hier: === Running recovery method: iterative_improved at 2026-06-12 14:42:30.694867 === === Improved Iterative Imputation Recovery === Starting iterative imputation... [IterativeImputer] Completing matrix with shape (4500000, 16) [IterativeImputer] Change: 14.01937198638916, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 4.824539661407471, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 2.6994433403015137, scaled tolerance: 0.01690000109374523
+def iterative_improved(train, op_sales_masked, outside_slice, max_iter=5, random_state=42): #lädt über 5 Stunden dass hier: === Running recovery method: iterative_improved at 2026-06-12 14:42:30.694867 === === Improved Iterative Imputation Recovery === Starting iterative imputation... [IterativeImputer] Completing matrix with shape (4500000, 16) [IterativeImputer] Change: 14.01937198638916, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 4.824539661407471, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 2.6994433403015137, scaled tolerance: 0.01690000109374523
     print("\n=== Improved Iterative Imputation Recovery ===")
     start_total = time.time()
 
@@ -1222,38 +1222,38 @@ def iterative_improved(history, op_sales_masked, outside_slice, max_iter=5, rand
 
 # Spezifische Demandrevovery Modelle: - Nils
 
-def tobit(history): # TODO
+def tobit(train): # TODO
     # ---------- FEATURES ----------
-    hours_matrix = np.vstack(history["hours_sale"].values)
+    hours_matrix = np.vstack(train["hours_sale"].values)
 
     # Summarise the 24-hour vector into 4 interpretable features
     # instead of 24 raw columns — reduces parameters from 32 to 12,
     # much better identified on typical product-level sample sizes
-    hours_stock = np.vstack(history["hours_stock_status"].values)  # (n, 24)
+    hours_stock = np.vstack(train["hours_stock_status"].values)  # (n, 24)
     peak_hours   = slice(9, 21)   # 09:00–20:00, main selling window
 
     hours_features = pd.DataFrame({
         "peak_sales":      hours_matrix[:, peak_hours].sum(axis=1),
         "offpeak_sales":   hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
         "peak_stockout_h": hours_stock[:, peak_hours].sum(axis=1),   # key censoring severity
-        "avail_frac":      1 - history["stock_hour6_22_cnt"].values / 16,  # fraction of 6-22 available
-    }, index=history.index)
+        "avail_frac":      1 - train["stock_hour6_22_cnt"].values / 16,  # fraction of 6-22 available
+    }, index=train.index)
 
     base_df = pd.DataFrame({
-        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek,
-        "temperature": history["avg_temperature"],
-        "humidity":    history["avg_humidity"],
-        "wind":        history["avg_wind_level"],
-        "precpt":      history["precpt"],        # was missing — strong demand driver
-        "holiday":     history["holiday_flag"],
-        "activity":    history["activity_flag"],
-        "discount":    history["discount"],
+        "weekday":     pd.to_datetime(train["dt"]).dt.dayofweek,
+        "temperature": train["avg_temperature"],
+        "humidity":    train["avg_humidity"],
+        "wind":        train["avg_wind_level"],
+        "precpt":      train["precpt"],        # was missing — strong demand driver
+        "holiday":     train["holiday_flag"],
+        "activity":    train["activity_flag"],
+        "discount":    train["discount"],
         "const":       1.0,
-    }, index=history.index).fillna(0)
+    }, index=train.index).fillna(0)
 
     X           = pd.concat([base_df, hours_features], axis=1).values.astype(np.float64)
-    y           = history["sale_amount"].values.astype(np.float64).ravel()
-    is_censored = history["is_censored"].values.astype(bool).ravel()
+    y           = train["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = train["is_censored"].values.astype(bool).ravel()
 
     obs_mask         = ~is_censored
     X_obs, y_obs     = X[obs_mask], y[obs_mask]
@@ -1303,7 +1303,7 @@ def tobit(history): # TODO
     print(f"sigma_hat: {sigma_hat:.4f}")
     return recovered_daily
 
-def tobit_improved(history):  # Tobit / censored regression for stockout recovery - Laura === Running recovery method: tobit_improved at 2026-06-12 19:46:54.791141 ===
+def tobit_improved(train):  # Tobit / censored regression for stockout recovery - Laura === Running recovery method: tobit_improved at 2026-06-12 19:46:54.791141 ===
 # Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT
 # sigma_hat: 0.1123
 # Mean raw sale_amount:  0.9986
@@ -1314,8 +1314,8 @@ def tobit_improved(history):  # Tobit / censored regression for stockout recover
     print("\n=== Tobit Recovery Model ===")
 
     # ---------- FEATURES ----------
-    hours_matrix = np.vstack(history["hours_sale"].values)
-    hours_stock = np.vstack(history["hours_stock_status"].values)
+    hours_matrix = np.vstack(train["hours_sale"].values)
+    hours_stock = np.vstack(train["hours_stock_status"].values)
 
     peak_hours = slice(9, 21)
 
@@ -1323,24 +1323,24 @@ def tobit_improved(history):  # Tobit / censored regression for stockout recover
         "peak_sales": hours_matrix[:, peak_hours].sum(axis=1),
         "offpeak_sales": hours_matrix[:, :9].sum(axis=1) + hours_matrix[:, 21:].sum(axis=1),
         "peak_stockout_h": hours_stock[:, peak_hours].sum(axis=1),
-        "avail_frac": 1 - history["stock_hour6_22_cnt"].values / 16,
-    }, index=history.index)
+        "avail_frac": 1 - train["stock_hour6_22_cnt"].values / 16,
+    }, index=train.index)
 
     base_df = pd.DataFrame({
-        "weekday": pd.to_datetime(history["dt"]).dt.dayofweek,
-        "temperature": history["avg_temperature"],
-        "humidity": history["avg_humidity"],
-        "wind": history["avg_wind_level"],
-        "precpt": history["precpt"],
-        "holiday": history["holiday_flag"],
-        "activity": history["activity_flag"],
-        "discount": history["discount"],
-    }, index=history.index).fillna(0)
+        "weekday": pd.to_datetime(train["dt"]).dt.dayofweek,
+        "temperature": train["avg_temperature"],
+        "humidity": train["avg_humidity"],
+        "wind": train["avg_wind_level"],
+        "precpt": train["precpt"],
+        "holiday": train["holiday_flag"],
+        "activity": train["activity_flag"],
+        "discount": train["discount"],
+    }, index=train.index).fillna(0)
 
     X_df = pd.concat([base_df, hours_features], axis=1).fillna(0)
 
-    y = history["sale_amount"].values.astype(np.float64).ravel()
-    is_censored = history["is_censored"].values.astype(bool).ravel()
+    y = train["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = train["is_censored"].values.astype(bool).ravel()
 
     # ---------- SCALE FEATURES ----------
     scaler = StandardScaler()
@@ -1441,26 +1441,26 @@ def tobit_improved(history):  # Tobit / censored regression for stockout recover
 
     return recovered_daily
 
-def bayesian_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
+def bayesian_old(train):  # Bayesisches Regressionsmodell mit Metropolis-Hastings MCMC # 7 min aber schlechter als raw_data
     # ---------- FEATURES (identisch zu Tobit) ----------
-    hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
+    hours_matrix = np.vstack(train["hours_sale"].values).astype(np.float32)
     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
-                            index=history.index)
+                            index=train.index)
 
     base_df = pd.DataFrame({
-        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
-        "temperature": history["avg_temperature"],
-        "humidity":    history["avg_humidity"],
-        "wind":        history["avg_wind_level"],
-        "holiday":     history["holiday_flag"],
-        "activity":    history["activity_flag"],
-        "discount":    history["discount"],
+        "weekday":     pd.to_datetime(train["dt"]).dt.dayofweek.astype(np.float32),
+        "temperature": train["avg_temperature"],
+        "humidity":    train["avg_humidity"],
+        "wind":        train["avg_wind_level"],
+        "holiday":     train["holiday_flag"],
+        "activity":    train["activity_flag"],
+        "discount":    train["discount"],
         "const":       1.0,
-    }, index=history.index).fillna(0)
+    }, index=train.index).fillna(0)
 
     X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float32)
-    y           = history["sale_amount"].values.astype(np.float32).ravel()
-    is_censored = history["is_censored"].values.astype(bool).ravel()
+    y           = train["sale_amount"].values.astype(np.float32).ravel()
+    is_censored = train["is_censored"].values.astype(bool).ravel()
 
     obs = ~is_censored
     cen =  is_censored
@@ -1540,26 +1540,26 @@ def bayesian_old(history):  # Bayesisches Regressionsmodell mit Metropolis-Hasti
 
     return recovered_daily
     
-def bayesian(history):  # Bayesisches Modell mit NUTS
+def bayesian(train):  # Bayesisches Modell mit NUTS
     # ---------- FEATURES (identisch zu Tobit) ----------
-    hours_matrix = np.vstack(history["hours_sale"].values).astype(np.float32)
+    hours_matrix = np.vstack(train["hours_sale"].values).astype(np.float32)
     hours_df = pd.DataFrame(hours_matrix, columns=[f"hour_{h}" for h in range(24)],
-                            index=history.index)
+                            index=train.index)
 
     base_df = pd.DataFrame({
-        "weekday":     pd.to_datetime(history["dt"]).dt.dayofweek.astype(np.float32),
-        "temperature": history["avg_temperature"],
-        "humidity":    history["avg_humidity"],
-        "wind":        history["avg_wind_level"],
-        "holiday":     history["holiday_flag"],
-        "activity":    history["activity_flag"],
-        "discount":    history["discount"],
+        "weekday":     pd.to_datetime(train["dt"]).dt.dayofweek.astype(np.float32),
+        "temperature": train["avg_temperature"],
+        "humidity":    train["avg_humidity"],
+        "wind":        train["avg_wind_level"],
+        "holiday":     train["holiday_flag"],
+        "activity":    train["activity_flag"],
+        "discount":    train["discount"],
         "const":       1.0,
-    }, index=history.index).fillna(0)
+    }, index=train.index).fillna(0)
 
     X           = pd.concat([base_df, hours_df], axis=1).values.astype(np.float64)
-    y           = history["sale_amount"].values.astype(np.float64).ravel()
-    is_censored = history["is_censored"].values.astype(bool).ravel()
+    y           = train["sale_amount"].values.astype(np.float64).ravel()
+    is_censored = train["is_censored"].values.astype(bool).ravel()
 
     obs = ~is_censored
     cen =  is_censored
@@ -1705,7 +1705,7 @@ def bayesian(history):  # Bayesisches Modell mit NUTS
 
 # Deep Learning basierte Recovery-Methoden: - Nils 
 
-def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
+def autoencoder(train, op_sales_masked, outside_slice, latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
 
     # Architecture: input = [16 sales + 16 mask flags + 7 covariates] = 39-dim
     # Encoder: 39 → 64 → latent_dim
@@ -1721,12 +1721,12 @@ def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20
     def norm(x): return (x - x.mean()) / (x.std() + 1e-8)
 
     cov = np.column_stack([
-        norm(history["discount"].values),
-        history["holiday_flag"].values,
-        history["activity_flag"].values,
-        norm(history["avg_temperature"].values),
-        norm(history["avg_humidity"].values),
-        norm(history["precpt"].values),
+        norm(train["discount"].values),
+        train["holiday_flag"].values,
+        train["activity_flag"].values,
+        norm(train["avg_temperature"].values),
+        norm(train["avg_humidity"].values),
+        norm(train["precpt"].values),
     ]).astype(np.float32)                          # (N, 6)
 
     # ── Normalise sales ───────────────────────────────────────────────────────
@@ -1807,9 +1807,9 @@ def autoencoder(history, op_sales_masked, outside_slice, latent_dim=8, epochs=20
     return recovered_daily
 
 
-#def transformer(history): # SAITS, BRITS, GRIN, CSDI
+#def transformer(train): # SAITS, BRITS, GRIN, CSDI
 
-def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
+def transformer_old(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
 
     print("\n=== Transformer Recovery ===")
     start_total = time.time()
@@ -1949,7 +1949,7 @@ def transformer_old(history, op_sales_masked, outside_slice, epochs=20, batch_si
 
     return recovered_daily
 
-def transformer_old2(history, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):
+def transformer_old2(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):
 
     print("\n=== Transformer Recovery ===")
     start_total = time.time()
@@ -2138,7 +2138,7 @@ def transformer_old2(history, op_sales_masked, outside_slice, epochs=20, batch_s
     print(f"Epochs used: {epochs}")
     return recovered_daily
 
-def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_size=512, random_state=42):
+def transformer_old3(train, op_sales_masked, outside_slice, epochs=20, batch_size=512, random_state=42):
     """
     Denoising Transformer for hourly sales imputation.
 
@@ -2146,7 +2146,7 @@ def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_s
                       Hourly sales profiles; NaN = censored hour.
     outside_slice   : np.ndarray, shape (n_days,)
                       Sales recorded outside the tracked hour window.
-    history         : pd.DataFrame
+    train         : pd.DataFrame
                       Full dataset; result written to 'recovered_daily_sales_transformer'.
 
     Approach — BERT-style masked prediction:
@@ -2376,17 +2376,17 @@ def transformer_old3(history, op_sales_masked, outside_slice, epochs=20, batch_s
     print(f"Imputed hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
     return recovered_daily
 
-def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4, batch_size=256, device=None):
+def transformer(train, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4, batch_size=256, device=None):
     """
     Imputes censored (NaN) hourly cells in op_sales_masked using an
     encoder-only Transformer trained only on observed (non-NaN) hours.
 
     Mirrors the signature of global_mean():
-      - history         : DataFrame with covariates + sale_amount
+      - train         : DataFrame with covariates + sale_amount
       - op_sales_masked : (N, 16) float32 array, NaN where stockout
       - outside_slice   : (N,)    float32 array, sales outside h06-h21
 
-    Writes history["recovered_daily_sales_transformer"] and returns imputed.
+    Writes train["recovered_daily_sales_transformer"] and returns imputed.
     """
 
     if device is None:
@@ -2397,12 +2397,12 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     # 1. Build covariates matrix  (N, H, C)
     # Broadcast daily scalars to every hour slot so each token is self-contained
     hour_idx   = np.tile(np.arange(H), (N, 1)).astype(np.float32) / (H - 1)  # (N,16) normalised 0-1
-    discount   = np.repeat(history["discount"].values[:, None],          H, axis=1).astype(np.float32)
-    holiday    = np.repeat(history["holiday_flag"].values[:, None],      H, axis=1).astype(np.float32)
-    activity   = np.repeat(history["activity_flag"].values[:, None],     H, axis=1).astype(np.float32)
-    temperature= np.repeat(history["avg_temperature"].values[:, None],   H, axis=1).astype(np.float32)
-    humidity   = np.repeat(history["avg_humidity"].values[:, None],      H, axis=1).astype(np.float32)
-    precpt     = np.repeat(history["precpt"].values[:, None],            H, axis=1).astype(np.float32)
+    discount   = np.repeat(train["discount"].values[:, None],          H, axis=1).astype(np.float32)
+    holiday    = np.repeat(train["holiday_flag"].values[:, None],      H, axis=1).astype(np.float32)
+    activity   = np.repeat(train["activity_flag"].values[:, None],     H, axis=1).astype(np.float32)
+    temperature= np.repeat(train["avg_temperature"].values[:, None],   H, axis=1).astype(np.float32)
+    humidity   = np.repeat(train["avg_humidity"].values[:, None],      H, axis=1).astype(np.float32)
+    precpt     = np.repeat(train["precpt"].values[:, None],            H, axis=1).astype(np.float32)
 
     # Normalise continuous covariates
     def norm(x):
@@ -2523,7 +2523,7 @@ def transformer(history, op_sales_masked, outside_slice, d_model=32, n_heads=4, 
     print(f"Imputed {imputed_count:,} hourly cells")
     return recovered_daily
 
-def diffusion(history, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
+def diffusion(train, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
 
     print("\n=== Diffusion-like Recovery ===")
 
@@ -2718,7 +2718,7 @@ class RecoveryDataset(Dataset):
 
         return (torch.from_numpy(x), torch.from_numpy(target))
 
-def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256, lr=1e-3, mask_prob=0.30, device=None, random_state=42):
+def dlinear_train(train, op_sales, op_sales_masked, epochs=50, batch_size=256, lr=1e-3, mask_prob=0.30, device=None, random_state=42):
     hourly_sales = op_sales.copy()
 
     # Keep only complete days
@@ -2785,7 +2785,7 @@ def dlinear_train(history, op_sales, op_sales_masked, epochs=50, batch_size=256,
 
     return model
 
-def dlinear(history, op_sales, op_sales_masked, outside_slice):
+def dlinear(train, op_sales, op_sales_masked, outside_slice):
     """
     Recover hourly demand using a pretrained DLinear model.
     """
@@ -2796,7 +2796,7 @@ def dlinear(history, op_sales, op_sales_masked, outside_slice):
     if os.path.exists("dlinear_model.pt"):
         model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
     else:
-        model = dlinear_train(history, op_sales, op_sales_masked)
+        model = dlinear_train(train, op_sales, op_sales_masked)
 
     model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
     model.to(device)

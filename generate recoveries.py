@@ -29,15 +29,15 @@ history = utils.make_features(history)
 train, val = utils.time_split(history, horizon=7)
 # TODO Hier drunter sollte nur mit train (nicht history) gearbeitet werden, da sonst data leakage entsteht, da die recoveries auf dem gesamten history berechnet werden und somit auch die future values enthalten sind.
 
-series_stockouts = history.groupby("series_id")["is_censored"].mean()
+series_stockouts = train.groupby("series_id")["is_censored"].mean()
 example_sid = series_stockouts[(series_stockouts > 0.3) & (series_stockouts < 0.7)].index[0]
 
-history["datum"] = pd.to_datetime(history["dt"])
-history["weekday"] = history["datum"].dt.day_name()
+train["datum"] = pd.to_datetime(train["dt"])
+train["weekday"] = train["datum"].dt.day_name()
 
 # calculate outside_slice
-hourly_sales = np.stack(history["hours_sale"].values)          # (N, 24)
-hourly_stock_ds = np.stack(history["hours_stock_status"].values)  # (N, 24)
+hourly_sales = np.stack(train["hours_sale"].values)          # (N, 24)
+hourly_stock_ds = np.stack(train["hours_stock_status"].values)  # (N, 24)
 
 op_sales = hourly_sales[:, 6:22].astype(np.float32)
 op_stock_status = hourly_stock_ds[:, 6:22].astype(np.float32)
@@ -51,8 +51,8 @@ print(f"Missing hourly cells: {missing_cells:,} / {total_cells:,} ({missing_cell
 
 #visible_sum = np.nansum(np.where(op_stock_status == 0, op_sales, 0), axis=1) # all sales where enough stock was available
 #outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - visible_sum, 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21) TODO möglicher Fehler Doppelzählung
-outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - np.nansum(op_sales, axis=1), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
-
+outside_slice = np.maximum(train["sale_amount"].values.astype(np.float32) - np.nansum(op_sales, axis=1), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
+# TODO history oder train
 
 
 RANDOM_SEED = 42
@@ -63,174 +63,174 @@ rng = np.random.default_rng(RANDOM_SEED)
 # ------------------------------------------------------------
 
 recovery_methods = {
-    # "random_sampling": {
-    #     "func": recovery.random_sampling,
-    #     "args": (history, op_sales_masked, outside_slice, rng),
-    #     "target_col": "recovered_daily_sales_random_sampling",
-    # },
-    # "global_mean": {
-    #     "func": recovery.global_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_global_mean",
-    # },
-    # "per_series_mean": {
-    #     "func": recovery.per_series_mean,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_per_series_mean",
-    # },
-    # "hourly_mean": {
-    #     "func": recovery.hourly_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_hourly_mean",
-    # },
-    # "hour_per_series_mean": {
-    #     "func": recovery.hour_per_series_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_hour_per_series_mean",
-    # },
-    # "weekday_mean": {
-    #     "func": recovery.weekday_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_weekday_mean",
-    # },
-    # "weekday_daily_mean": {
-    #     "func": recovery.weekday_daily_mean,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_weekday_daily_mean",
-    # },
-    # "rolling_mean": {
-    #     "func": recovery.rolling_mean,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_rolling_mean",
-    # },
-    # "exponential_moving_average": {
-    #     "func": recovery.exponential_moving_average,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_exponential_moving_average",
-    # },
-    # "exponential_moving_average_series": {
-    #     "func": recovery.exponential_moving_average_series,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_exponential_moving_average_series",
-    # },
-    # "interpolation_linear": {
-    #     "func": recovery.interpolation_linear,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_interpolation_linear",
-    # },
-    # "interpolation_spline": {
-    #     "func": recovery.interpolation_spline,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_interpolation_spline",
-    # },
+    "random_sampling": {
+        "func": recovery.random_sampling,
+        "args": (train, op_sales_masked, outside_slice, rng),
+        "target_col": "recovered_daily_sales_random_sampling",
+    },
+    "global_mean": {
+        "func": recovery.global_mean,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_global_mean",
+    },
+    "per_series_mean": {
+        "func": recovery.per_series_mean,
+        "args": (train,),
+        "target_col": "recovered_daily_sales_per_series_mean",
+    },
+    "hourly_mean": {
+        "func": recovery.hourly_mean,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_hourly_mean",
+    },
+    "hour_per_series_mean": {
+        "func": recovery.hour_per_series_mean,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_hour_per_series_mean",
+    },
+    "weekday_mean": {
+        "func": recovery.weekday_mean,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_weekday_mean",
+    },
+    "weekday_daily_mean": {
+        "func": recovery.weekday_daily_mean,
+        "args": (train,),
+        "target_col": "recovered_daily_sales_weekday_daily_mean",
+    },
+    "rolling_mean": {
+        "func": recovery.rolling_mean,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_rolling_mean",
+    },
+    "exponential_moving_average": {
+        "func": recovery.exponential_moving_average,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_exponential_moving_average",
+    },
+    "exponential_moving_average_series": {
+        "func": recovery.exponential_moving_average_series,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_exponential_moving_average_series",
+    },
+    "interpolation_linear": {
+        "func": recovery.interpolation_linear,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_interpolation_linear",
+    },
+    "interpolation_spline": {
+        "func": recovery.interpolation_spline,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_interpolation_spline",
+    },
 
-    # "interpolation_spline_series": {
-    #     "func": recovery.interpolation_spline_series,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_interpolation_spline_series",
-    # },
+    "interpolation_spline_series": {
+        "func": recovery.interpolation_spline_series,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_interpolation_spline_series",
+    },
 
 
-    # "interpolation_polynomial": {
-    #     "func": recovery.interpolation_polynomial,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_interpolation_polynomial",
-    # },
-    # "kalman_smoothing": {
+    "interpolation_polynomial": {
+        "func": recovery.interpolation_polynomial,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_interpolation_polynomial",
+    },
+    # "kalman_smoothing": { # 1:45 h
     #     "func": recovery.kalman_smoothing,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_kalman_smoothing",
     # },
-    # "kalman_like": {
-    #     "func": recovery.kalman_like_smoothing,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_kalman_like",
-    # },
-    # "stl_real": {
+    "kalman_like": {
+        "func": recovery.kalman_like_smoothing,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_kalman_like",
+    },
+    # "stl_real": { # 1:21 h
     #     "func": recovery.stl_real,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_stl_real",
     # },
-    # "stl_based": {
-    #     "func": recovery.stl_based,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_stl_based",
-    # },
-    # "knn": {
+    "stl_based": {
+        "func": recovery.stl_based,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_stl_based",
+    },
+    # "knn": { # nicht durchgelaufen
     #     "func": recovery.knn,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_knn",
     # },
-    # "random_forest": {
-    #     "func": recovery.random_forest,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_random_forest",
-    # },
+    "random_forest": {
+        "func": recovery.random_forest,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_random_forest",
+    },
 
-    # "lightgbm": {
-    #     "func": recovery.lightgbm,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_lightgbm",
-    # },
-    # "xgboost": {
-    #     "func": recovery.xgboost,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_xgboost",
-    # },
-    # "iterative": {
+    "lightgbm": {
+        "func": recovery.lightgbm,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_lightgbm",
+    },
+    "xgboost": {
+        "func": recovery.xgboost,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_xgboost",
+    },
+    # "iterative": { # 1:37 h
     #     "func": recovery.iterative,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_iterative",
     # },
 
-    # "iterative_improved": {
-    #     "func": recovery.iterative_improved,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_iterative_improved",
-    # },
+    "iterative_improved": {
+        "func": recovery.iterative_improved,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_iterative_improved",
+    },
 
-    # "transformer": {
+    # "transformer": { # 2:13h 
     #     "func": recovery.transformer,
     #     "args": (history, op_sales_masked, outside_slice),
     #     "target_col": "recovered_daily_sales_transformer",
     # },
-    # "diffusion": {
-    #     "func": recovery.diffusion,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_diffusion",
-    # },
-    # "tobit": {
+    "diffusion": {
+        "func": recovery.diffusion,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_diffusion",
+    },
+    # "tobit": { # 1:10 h
     #     "func": recovery.tobit,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_tobit",
     # },
 
-    # "tobit_improved": {
+    # "tobit_improved": { # 1:10 h
     #     "func": recovery.tobit_improved,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_tobit_improved",
     # },
 
-    # "bayesian": {
+    # "bayesian": { # nicht fertig
     #     "func": recovery.bayesian,
     #     "args": (history,),
     #     "target_col": "recovered_daily_sales_bayesian",  
     # },
-    # "autoencoder": {
-    #     "func": recovery.autoencoder,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_autoencoder",
-    # },
-    # "dlinear": {
-    #     "func": recovery.dlinear,
-    #     "args": (history, op_sales, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_dlinear",
-    # },
-    # "lightgbm_v2": {
-    #     "func": recovery.lightgbm_v2,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_lightgbm_v2",
-    # }, 
+    "autoencoder": {
+        "func": recovery.autoencoder,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_autoencoder",
+    },
+    "dlinear": {
+        "func": recovery.dlinear,
+        "args": (train, op_sales, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_dlinear",
+    },
+    "lightgbm_v2": {
+        "func": recovery.lightgbm_v2,
+        "args": (train, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_lightgbm_v2",
+    }, 
     #=== LightGBM Recovery v2 Finished ===
     # Imputed 14,311,536 hourly cells
     # Mean raw sale_amount: 0.9986
@@ -270,12 +270,12 @@ for recovery_name, method in recovery_methods.items():
 
     print(f"\n=== Running recovery method: {recovery_name} at {current_time} ===")
     recovered_daily = method["func"](*method["args"])
-    history[method["target_col"]] = recovered_daily
-    print(f"Mean raw sale_amount: {history['sale_amount'].mean():.4f}")
+    train[method["target_col"]] = recovered_daily
+    print(f"Mean raw sale_amount: {train['sale_amount'].mean():.4f}")
     print(f"Mean recovered sales: {recovered_daily.mean():.4f}")
 
 
-    arr = history[f"{method['target_col']}"].to_numpy()
+    arr = train[f"{method['target_col']}"].to_numpy()
 
     np.save(f"recovered_column/{method['target_col']}.npy", arr)
     print("Gespeichert:", arr)

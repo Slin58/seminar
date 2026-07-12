@@ -16,9 +16,11 @@ history = utils.prepare_panel(train_raw)
 history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
-# ------------------------------------------------------------
-# 1. Alle Recovery-Werte laden
-# ------------------------------------------------------------
+# 1. Train split
+train_r, val = utils.time_split(history, horizon=7)
+
+
+# 2. Alle Recovery-Werte laden
 folder = "recovered_column"
 
 for datei in os.listdir(folder):
@@ -28,16 +30,12 @@ for datei in os.listdir(folder):
 
         loaded_arr = np.load(path)
 
-        history[datei.replace(".npy", "")] = loaded_arr
+        train_r[datei.replace(".npy", "")] = loaded_arr
 
-# ------------------------------------------------------------
 # 2. Train/Validation Split neu machen
-# ------------------------------------------------------------
-train_r, val_r = utils.time_split(history, horizon=7)
+#train_r, val_r = utils.time_split(history, horizon=7)
 
-# ------------------------------------------------------------
 # 3. Forecast-Modelle definieren
-# ------------------------------------------------------------
 print("Forecasting")
 
 forecast_models = {
@@ -89,9 +87,7 @@ forecast_models = {
 recovery_models = ["recovered_daily_sales_per_series_mean"] # if list empty all recovery methods are used
 #recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
-# ------------------------------------------------------------
 # 4. Forecasts zu allen Recoevery Werten ausführen
-# ------------------------------------------------------------
 all_results = {}
 
 with open("recovered_column/results.json", "r") as f:
@@ -103,7 +99,7 @@ for forecast_name, forecast_func in forecast_models.items():
     processing_time = datetime.now() - datetime.now()
     counter = 0
 
-    for col in history.columns:
+    for col in train_r.columns:
         if (col.startswith("recovered_daily_sales_") or col == "sale_amount") and (col in recovery_models or len(recovery_models) == 0):
 
             name = col.replace("recovered_daily_sales_", "")
@@ -132,11 +128,10 @@ for forecast_name, forecast_func in forecast_models.items():
 
             current_time = datetime.now()
 
-            val_pred = forecast_func(train_df=train_r, val_df=val_r, recovery_col=col) 
+            val_pred = forecast_func(train_df=train_r, val_df=val, recovery_col=col) 
             
-            # ------------------------------------------------------------ 
-            # Prediction speichern für spätere Ensembles
-            # ------------------------------------------------------------
+            # Prediction speichern für spätere Ensembles:
+            # 
             # pred_folder = "forecast_predictions"
             # os.makedirs(pred_folder, exist_ok=True)
 
@@ -170,9 +165,7 @@ with open("recovered_column/results.json", "w") as f:
 
 
 """
-# ------------------------------------------------------------
 # 5. Ergebnisse anzeigen
-# ------------------------------------------------------------
 all_results_df = pd.DataFrame(all_results).T
 
 
