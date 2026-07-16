@@ -136,21 +136,21 @@ recovery_methods = {
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_interpolation_polynomial",
     },
-    # "kalman_smoothing": { # 1:45 h
-    #     "func": recovery.kalman_smoothing,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_kalman_smoothing",
-    # },
+    "kalman_smoothing": { # 1:45 h
+        "func": recovery.kalman_smoothing,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_kalman_smoothing",
+    },
     "kalman_like": {
         "func": recovery.kalman_like_smoothing,
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_kalman_like",
     },
-    # "stl_real": { # 1:21 h
-    #     "func": recovery.stl_real,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_stl_real",
-    # },
+    "stl_real": { # 1:21 h
+        "func": recovery.stl_real,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_stl_real",
+    },
     "stl_based": {
         "func": recovery.stl_based,
         "args": (train, op_sales_masked, outside_slice),
@@ -177,11 +177,11 @@ recovery_methods = {
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_xgboost",
     },
-    # "iterative": { # 1:37 h
-    #     "func": recovery.iterative,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_iterative",
-    # },
+    "iterative": { # 1:37 h
+        "func": recovery.iterative,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_iterative",
+    },
 
     "iterative_improved": {
         "func": recovery.iterative_improved,
@@ -189,27 +189,27 @@ recovery_methods = {
         "target_col": "recovered_daily_sales_iterative_improved",
     },
 
-    # "transformer": { # 2:13h 
-    #     "func": recovery.transformer,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_transformer",
-    # },
+    "transformer": { # 2:13h 
+        "func": recovery.transformer,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_transformer",
+    },
     "diffusion": {
         "func": recovery.diffusion,
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_diffusion",
     },
-    # "tobit": { # 1:10 h
-    #     "func": recovery.tobit,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_tobit",
-    # },
+    "tobit": { # 1:10 h
+        "func": recovery.tobit,
+        "args": (history,),
+        "target_col": "recovered_daily_sales_tobit",
+    },
 
-    # "tobit_improved": { # 1:10 h
-    #     "func": recovery.tobit_improved,
-    #     "args": (history,),
-    #     "target_col": "recovered_daily_sales_tobit_improved",
-    # },
+    "tobit_improved": { # 1:10 h
+        "func": recovery.tobit_improved,
+        "args": (history,),
+        "target_col": "recovered_daily_sales_tobit_improved",
+    },
 
     # "bayesian": { # nicht fertig
     #     "func": recovery.bayesian,
