@@ -29,9 +29,6 @@ history = utils.make_features(history)
 train, val = utils.time_split(history, horizon=7)
 # TODO Hier drunter sollte nur mit train (nicht history) gearbeitet werden, da sonst data leakage entsteht, da die recoveries auf dem gesamten history berechnet werden und somit auch die future values enthalten sind.
 
-series_stockouts = train.groupby("series_id")["is_censored"].mean()
-example_sid = series_stockouts[(series_stockouts > 0.3) & (series_stockouts < 0.7)].index[0]
-
 train["datum"] = pd.to_datetime(train["dt"])
 train["weekday"] = train["datum"].dt.day_name()
 

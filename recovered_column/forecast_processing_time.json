@@ -1,1 +1,1 @@
-{}
+{"global_mean_forecast": 0.21952321428571428, "seasonal_naive_forecast": 0.4904402857142857, "rolling_28d_forecast": 3.193440892857143, "xgboost_forecast": 69.24984121428572, "lightgbm_forecast_feature_optimized_v3": 362.1021507857143}

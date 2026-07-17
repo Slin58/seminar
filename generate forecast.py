@@ -39,8 +39,8 @@ for datei in os.listdir(folder):
 print("Forecasting")
 
 forecast_models = {
-    #"global_mean_forecast": forecast.global_mean,
-    #"seasonal_naive_forecast": forecast.seasonal_naive,
+    "global_mean_forecast": forecast.global_mean,
+    "seasonal_naive_forecast": forecast.seasonal_naive,
     "rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
     #"double_exponential_smoothing": forecast.double_exponential_smoothing,
@@ -52,7 +52,7 @@ forecast_models = {
     #"arima_like_fast": forecast.arima_like_fast,
     #"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
     #"lightgbm_forecast": forecast.lightgbm_forecast,
-    #"xgboost_forecast": forecast.xgboost_forecast,
+    "xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
     #"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
@@ -71,7 +71,7 @@ forecast_models = {
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
-    #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
+    "lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
     #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
@@ -84,10 +84,10 @@ forecast_models = {
     #"dlinear_forecast": forecast.dlinear
     }
 
-recovery_models = ["recovered_daily_sales_per_series_mean"] # if list empty all recovery methods are used
+recovery_models = [] # if list empty all recovery methods are used
 #recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
-# 4. Forecasts zu allen Recoevery Werten ausführen
+# 4. Forecasts zu allen Recovery Werten ausführen
 all_results = {}
 
 with open("recovered_column/results.json", "r") as f:
@@ -105,6 +105,8 @@ for forecast_name, forecast_func in forecast_models.items():
             name = col.replace("recovered_daily_sales_", "")
             if name == "sale_amount":
                 name = "raw_sales"
+
+            # TODO nicht überschreiben von vorhandenen Werten, nur wenn nicht vorhanden
 
             result_name = f"{name} + {forecast_name}"
 
