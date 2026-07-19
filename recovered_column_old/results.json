@@ -90,7 +90,7 @@
         "harmonic_mean": 0.3614,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + rolling_28d_forecast": {
+    "series_mean + rolling_28d_forecast": {
         "wape_overall": 0.3466,
         "wape_low_sale": 0.4069,
         "wape_high_sale": 0.3,
@@ -237,14 +237,14 @@
         "harmonic_mean": 0.4088,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + global_mean_forecast": {
+    "series_mean + global_mean_forecast": {
         "wape_overall": 0.3926,
         "wape_low_sale": 0.4384,
         "wape_high_sale": 0.3572,
         "harmonic_mean": 0.3933,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + seasonal_naive_forecast": {
+    "series_mean + seasonal_naive_forecast": {
         "wape_overall": 0.3765,
         "wape_low_sale": 0.4773,
         "wape_high_sale": 0.2986,
@@ -349,14 +349,14 @@
         "harmonic_mean": 0.4026,
         "scored_rows": 198987
     },
-    "per_series_mean + global_mean_forecast": {
+    "series_daily_mean + global_mean_forecast": {
         "wape_overall": 0.3753,
         "wape_low_sale": 0.4348,
         "wape_high_sale": 0.3293,
         "harmonic_mean": 0.375,
         "scored_rows": 198987
     },
-    "per_series_mean + seasonal_naive_forecast": {
+    "series_daily_mean + seasonal_naive_forecast": {
         "wape_overall": 0.3695,
         "wape_low_sale": 0.4559,
         "wape_high_sale": 0.3027,
@@ -552,7 +552,7 @@
         "harmonic_mean": 0.3462,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + simple_exponential_smoothing": {
+    "series_mean + simple_exponential_smoothing": {
         "wape_overall": 0.3238,
         "wape_low_sale": 0.4046,
         "wape_high_sale": 0.2613,
@@ -608,7 +608,7 @@
         "harmonic_mean": 0.3393,
         "scored_rows": 198987
     },
-    "per_series_mean + simple_exponential_smoothing": {
+    "series_daily_mean + simple_exponential_smoothing": {
         "wape_overall": 0.3305,
         "wape_low_sale": 0.4052,
         "wape_high_sale": 0.2728,
@@ -727,7 +727,7 @@
         "harmonic_mean": 0.3103,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + lightgbm_forecast": {
+    "series_mean + lightgbm_forecast": {
         "wape_overall": 0.2905,
         "wape_low_sale": 0.3602,
         "wape_high_sale": 0.2366,
@@ -783,7 +783,7 @@
         "harmonic_mean": 0.3059,
         "scored_rows": 198987
     },
-    "per_series_mean + lightgbm_forecast": {
+    "series_daily_mean + lightgbm_forecast": {
         "wape_overall": 0.3047,
         "wape_low_sale": 0.373,
         "wape_high_sale": 0.2519,
@@ -902,7 +902,7 @@
         "harmonic_mean": 0.3099,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + xgboost_forecast": {
+    "series_mean + xgboost_forecast": {
         "wape_overall": 0.2889,
         "wape_low_sale": 0.357,
         "wape_high_sale": 0.2362,
@@ -958,7 +958,7 @@
         "harmonic_mean": 0.3062,
         "scored_rows": 198987
     },
-    "per_series_mean + xgboost_forecast": {
+    "series_daily_mean + xgboost_forecast": {
         "wape_overall": 0.3047,
         "wape_low_sale": 0.3724,
         "wape_high_sale": 0.2524,
@@ -1077,7 +1077,7 @@
         "harmonic_mean": 0.318,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + random_forest_forecast": {
+    "series_mean + random_forest_forecast": {
         "wape_overall": 0.2973,
         "wape_low_sale": 0.3709,
         "wape_high_sale": 0.2404,
@@ -1133,7 +1133,7 @@
         "harmonic_mean": 0.3105,
         "scored_rows": 198987
     },
-    "per_series_mean + random_forest_forecast": {
+    "series_daily_mean + random_forest_forecast": {
         "wape_overall": 0.3135,
         "wape_low_sale": 0.3834,
         "wape_high_sale": 0.2595,
@@ -1252,7 +1252,7 @@
         "harmonic_mean": 0.3481,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + single_exponential_smoothing": {
+    "series_mean + single_exponential_smoothing": {
         "wape_overall": 0.3288,
         "wape_low_sale": 0.4001,
         "wape_high_sale": 0.2737,
@@ -1308,7 +1308,7 @@
         "harmonic_mean": 0.3419,
         "scored_rows": 198987
     },
-    "per_series_mean + single_exponential_smoothing": {
+    "series_daily_mean + single_exponential_smoothing": {
         "wape_overall": 0.3375,
         "wape_low_sale": 0.4051,
         "wape_high_sale": 0.2852,
@@ -1427,7 +1427,7 @@
         "harmonic_mean": 0.3147,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + random_forest_forecast_optimized": {
+    "series_mean + random_forest_forecast_optimized": {
         "wape_overall": 0.2943,
         "wape_low_sale": 0.3672,
         "wape_high_sale": 0.2379,
@@ -1483,7 +1483,7 @@
         "harmonic_mean": 0.3079,
         "scored_rows": 198987
     },
-    "per_series_mean + random_forest_forecast_optimized": {
+    "series_daily_mean + random_forest_forecast_optimized": {
         "wape_overall": 0.3114,
         "wape_low_sale": 0.3817,
         "wape_high_sale": 0.2571,
@@ -1602,7 +1602,7 @@
         "harmonic_mean": 0.3569,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + cnn_forecast_original_3epochs": {
+    "series_mean + cnn_forecast_original_3epochs": {
         "wape_overall": 0.3362,
         "wape_low_sale": 0.4105,
         "wape_high_sale": 0.2788,
@@ -1658,7 +1658,7 @@
         "harmonic_mean": 0.3518,
         "scored_rows": 198987
     },
-    "per_series_mean + cnn_forecast_original_3epochs": {
+    "series_daily_mean + cnn_forecast_original_3epochs": {
         "wape_overall": 0.3391,
         "wape_low_sale": 0.4101,
         "wape_high_sale": 0.2843,
@@ -1777,7 +1777,7 @@
         "harmonic_mean": 0.3409,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + lstm_forecast_fast": {
+    "series_mean + lstm_forecast_fast": {
         "wape_overall": 0.3296,
         "wape_low_sale": 0.4016,
         "wape_high_sale": 0.2739,
@@ -1833,7 +1833,7 @@
         "harmonic_mean": 0.3356,
         "scored_rows": 198987
     },
-    "per_series_mean + lstm_forecast_fast": {
+    "series_daily_mean + lstm_forecast_fast": {
         "wape_overall": 0.3354,
         "wape_low_sale": 0.405,
         "wape_high_sale": 0.2816,
@@ -1952,7 +1952,7 @@
         "harmonic_mean": 0.3283,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + catboost_forecast_fast": {
+    "series_mean + catboost_forecast_fast": {
         "wape_overall": 0.3071,
         "wape_low_sale": 0.3733,
         "wape_high_sale": 0.256,
@@ -2008,7 +2008,7 @@
         "harmonic_mean": 0.3262,
         "scored_rows": 198987
     },
-    "per_series_mean + catboost_forecast_fast": {
+    "series_daily_mean + catboost_forecast_fast": {
         "wape_overall": 0.3198,
         "wape_low_sale": 0.3814,
         "wape_high_sale": 0.2723,
@@ -2127,7 +2127,7 @@
         "harmonic_mean": 0.3058,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + lightgbm_forecast_optimized": {
+    "series_mean + lightgbm_forecast_optimized": {
         "wape_overall": 0.2867,
         "wape_low_sale": 0.3573,
         "wape_high_sale": 0.2321,
@@ -2183,7 +2183,7 @@
         "harmonic_mean": 0.3015,
         "scored_rows": 198987
     },
-    "per_series_mean + lightgbm_forecast_optimized": {
+    "series_daily_mean + lightgbm_forecast_optimized": {
         "wape_overall": 0.3033,
         "wape_low_sale": 0.3719,
         "wape_high_sale": 0.2503,
@@ -2302,7 +2302,7 @@
         "harmonic_mean": 0.3008,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + lightgbm_forecast_feature_optimized": {
+    "series_mean + lightgbm_forecast_feature_optimized": {
         "wape_overall": 0.2849,
         "wape_low_sale": 0.3555,
         "wape_high_sale": 0.2303,
@@ -2358,7 +2358,7 @@
         "harmonic_mean": 0.2971,
         "scored_rows": 198987
     },
-    "per_series_mean + lightgbm_forecast_feature_optimized": {
+    "series_daily_mean + lightgbm_forecast_feature_optimized": {
         "wape_overall": 0.3244,
         "wape_low_sale": 0.3987,
         "wape_high_sale": 0.267,
@@ -2477,7 +2477,7 @@
         "harmonic_mean": 0.357,
         "scored_rows": 198987
     },
-    "hour_per_series_mean + single_exponential_smoothing_series": {
+    "series_mean + single_exponential_smoothing_series": {
         "wape_overall": 0.3385,
         "wape_low_sale": 0.4054,
         "wape_high_sale": 0.2867,
@@ -2533,7 +2533,7 @@
         "harmonic_mean": 0.3517,
         "scored_rows": 198987
     },
-    "per_series_mean + single_exponential_smoothing_series": {
+    "series_daily_mean + single_exponential_smoothing_series": {
         "wape_overall": 0.3446,
         "wape_low_sale": 0.4117,
         "wape_high_sale": 0.2926,
@@ -2988,7 +2988,7 @@
         "harmonic_mean": 0.4361,
         "scored_rows": 198987
     },
-    "per_series_mean + rolling_28d_forecast": {
+    "series_daily_mean + rolling_28d_forecast": {
         "wape_overall": 0.3466,
         "wape_low_sale": 0.4105,
         "wape_high_sale": 0.2972,

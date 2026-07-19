@@ -1,0 +1,11 @@
+forecast_method,type,recovery,wape_overall,wape_low_sale,wape_high_sale,harmonic_mean,scored_rows
+lightgbm_forecast_feature_optimized_v3,top1 recovery,raw_sales,0.2879,0.3521,0.2383,0.2854,198987.0
+lightgbm_forecast_feature_optimized_v3,raw_sales,raw_sales,0.2879,0.3521,0.2383,0.2854,198987.0
+xgboost_forecast,top1 recovery,raw_sales,0.2985,0.3571,0.2532,0.2971,198987.0
+xgboost_forecast,raw_sales,raw_sales,0.2985,0.3571,0.2532,0.2971,198987.0
+rolling_28d_forecast,top1 recovery,stl_real,0.3453,0.4091,0.2959,0.344,198987.0
+rolling_28d_forecast,raw_sales,raw_sales,0.3637,0.4143,0.3247,0.3639,198987.0
+seasonal_naive_forecast,top1 recovery,kalman_like,0.3769,0.4857,0.2929,0.3692,198987.0
+seasonal_naive_forecast,raw_sales,raw_sales,0.3976,0.483,0.3317,0.3947,198987.0
+global_mean_forecast,top1 recovery,series_daily_mean,0.3904,0.4449,0.3484,0.3906,198987.0
+global_mean_forecast,raw_sales,raw_sales,0.4336,0.4508,0.4203,0.4345,198987.0

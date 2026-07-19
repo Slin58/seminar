@@ -70,20 +70,20 @@ recovery_methods = {
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_global_mean",
     },
-    "per_series_mean": {
-        "func": recovery.per_series_mean,
+    "series_daily_mean": {
+        "func": recovery.series_daily_mean,
         "args": (train,),
-        "target_col": "recovered_daily_sales_per_series_mean",
+        "target_col": "recovered_daily_sales_series_daily_mean",
     },
     "hourly_mean": {
         "func": recovery.hourly_mean,
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_hourly_mean",
     },
-    "hour_per_series_mean": {
-        "func": recovery.hour_per_series_mean,
+    "series_mean": {
+        "func": recovery.series_mean,
         "args": (train, op_sales_masked, outside_slice),
-        "target_col": "recovered_daily_sales_hour_per_series_mean",
+        "target_col": "recovered_daily_sales_series_mean",
     },
     "weekday_mean": {
         "func": recovery.weekday_mean,
@@ -153,11 +153,11 @@ recovery_methods = {
         "args": (train, op_sales_masked, outside_slice),
         "target_col": "recovered_daily_sales_stl_based",
     },
-    # "knn": { # nicht durchgelaufen
-    #     "func": recovery.knn,
-    #     "args": (history, op_sales_masked, outside_slice),
-    #     "target_col": "recovered_daily_sales_knn",
-    # },
+    "knn": { # nicht durchgelaufen
+        "func": recovery.knn,
+        "args": (history, op_sales_masked, outside_slice),
+        "target_col": "recovered_daily_sales_knn",
+    },
     "random_forest": {
         "func": recovery.random_forest,
         "args": (train, op_sales_masked, outside_slice),

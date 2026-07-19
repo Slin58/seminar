@@ -67,7 +67,7 @@ def global_mean(train, op_sales_masked, outside_slice):  # globaler Durchschnitt
     print(f"Global mean used: {mean_value:.4f}")
     return recovered_daily
 
-def per_series_mean(train): # Durchschnitt derselben series_id - Nils
+def series_daily_mean(train): # Durchschnitt derselben series_id pro Tag - Nils
     recovered_daily = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
 
     series_mean = recovered_daily.groupby(train["series_id"]).transform("mean")
@@ -76,7 +76,7 @@ def per_series_mean(train): # Durchschnitt derselben series_id - Nils
 
     return recovered_daily
 
-def hour_per_series_mean(train, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
+def series_mean(train, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
     imputed = op_sales_masked.copy()
 
     # ---------- SERIES IDS ----------
