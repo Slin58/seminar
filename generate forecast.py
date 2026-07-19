@@ -16,24 +16,21 @@ history = utils.prepare_panel(train_raw)
 history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
-# 1. Train split
-train_r, val = utils.time_split(history, horizon=7)
-
 
 # 2. Alle Recovery-Werte laden
-folder = "recovered_column"
+recovery_folder = "recovered_column_data_leakage_correct_outside_slice" 
 
-for datei in os.listdir(folder):
+for datei in os.listdir(recovery_folder):
     if datei.endswith(".npy"):
         print("Loaded", datei.replace(".npy", "").replace("recovered_daily_sales_", ""))
-        path = os.path.join(folder, datei)
+        path = os.path.join(recovery_folder, datei)
 
         loaded_arr = np.load(path)
 
-        train_r[datei.replace(".npy", "")] = loaded_arr
+        history[datei.replace(".npy", "")] = loaded_arr
 
 # 2. Train/Validation Split neu machen
-#train_r, val_r = utils.time_split(history, horizon=7)
+train_r, val_r = utils.time_split(history, horizon=7)
 
 # 3. Forecast-Modelle definieren
 print("Forecasting")
@@ -52,7 +49,7 @@ forecast_models = {
     #"arima_like_fast": forecast.arima_like_fast,
     #"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
     #"lightgbm_forecast": forecast.lightgbm_forecast,
-    "xgboost_forecast": forecast.xgboost_forecast,
+    #"xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
     #"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
@@ -71,7 +68,7 @@ forecast_models = {
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
-    "lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
+    #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
     #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
@@ -90,7 +87,7 @@ recovery_models = [] # if list empty all recovery methods are used
 # 4. Forecasts zu allen Recovery Werten ausführen
 all_results = {}
 
-with open("recovered_column/results.json", "r") as f:
+with open(f"{recovery_folder}/results.json", "r") as f:
     content = f.read()
     all_results = json.loads(content) if content.strip() else {}
 
@@ -130,7 +127,7 @@ for forecast_name, forecast_func in forecast_models.items():
 
             current_time = datetime.now()
 
-            val_pred = forecast_func(train_df=train_r, val_df=val, recovery_col=col) 
+            val_pred = forecast_func(train_df=train_r, val_df=val_r, recovery_col=col) 
             
             # Prediction speichern für spätere Ensembles:
             # 
@@ -152,47 +149,14 @@ for forecast_name, forecast_func in forecast_models.items():
             print(f"Finished: {result_name} ({datetime.now() - current_time})")
 
     if counter > 0:
-        with open("recovered_column/forecast_processing_time.json", "r") as f:
+        with open(f"{recovery_folder}/forecast_processing_time.json", "r") as f:
             content = f.read()
             time = json.loads(content) if content.strip() else {}
 
         time[forecast_name] = processing_time.total_seconds() / counter
-        with open("recovered_column/forecast_processing_time.json", "w") as f:
+        with open(f"{recovery_folder}/forecast_processing_time.json", "w") as f:
             json.dump(time, f) 
 
 
-with open("recovered_column/results.json", "w") as f:
+with open(f"{recovery_folder}/results.json", "w") as f:
     json.dump(all_results, f)
-
-
-
-"""
-# 5. Ergebnisse anzeigen
-all_results_df = pd.DataFrame(all_results).T
-
-
-print("=== Dynamic Recovery + Forecast Results ===")
-
-pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
-display(all_results_df.sort_values("harmonic_mean"))
-
-print("=== Processing time recovery methods ===")
-with open("recovered_column/processing_time.json", "r") as f:
-    content = f.read()
-    time = json.loads(content) if content.strip() else {}
-
-rows = []
-for key, seconds in time.items():
-    total = int(seconds)
-    h, remainder = divmod(total, 3600)
-    m, s = divmod(remainder, 60)
-    ms = int((seconds % 1) * 1000)
-    name = key.removeprefix("recovered_daily_sales_")
-    rows.append({"method": name, "time": f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}", "seconds": seconds})
-
-df = pd.DataFrame(rows).sort_values("seconds").drop(columns="seconds").reset_index(drop=True)
-df.index += 1
-
-display(df)
-"""

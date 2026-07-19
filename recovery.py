@@ -53,6 +53,7 @@ def random_sampling(train, op_sales_masked, outside_slice, rng): # Simple recove
 
 def global_mean(train, op_sales_masked, outside_slice):  # globaler Durchschnitt
     imputed = op_sales_masked.copy()
+
     # Durchschnitt über alle sichtbaren Stundenwerte
     mean_value = np.nanmean(imputed)
     # Nur NaN-Werte ersetzen

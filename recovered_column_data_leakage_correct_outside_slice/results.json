@@ -1,0 +1,191 @@
+{
+    "raw_sales + global_mean_forecast": {
+        "wape_overall": 0.4336,
+        "wape_low_sale": 0.4508,
+        "wape_high_sale": 0.4203,
+        "harmonic_mean": 0.4345,
+        "scored_rows": 198987
+    },
+    "global_mean + global_mean_forecast": {
+        "wape_overall": 0.4352,
+        "wape_low_sale": 0.4847,
+        "wape_high_sale": 0.397,
+        "harmonic_mean": 0.4361,
+        "scored_rows": 198987
+    },
+    "hourly_mean + global_mean_forecast": {
+        "wape_overall": 0.4298,
+        "wape_low_sale": 0.47,
+        "wape_high_sale": 0.3988,
+        "harmonic_mean": 0.4309,
+        "scored_rows": 198987
+    },
+    "random_sampling + global_mean_forecast": {
+        "wape_overall": 0.4304,
+        "wape_low_sale": 0.4714,
+        "wape_high_sale": 0.3987,
+        "harmonic_mean": 0.4315,
+        "scored_rows": 198987
+    },
+    "rolling_mean + global_mean_forecast": {
+        "wape_overall": 0.4154,
+        "wape_low_sale": 0.4529,
+        "wape_high_sale": 0.3865,
+        "harmonic_mean": 0.4165,
+        "scored_rows": 198987
+    },
+    "series_daily_mean + global_mean_forecast": {
+        "wape_overall": 0.3753,
+        "wape_low_sale": 0.4348,
+        "wape_high_sale": 0.3293,
+        "harmonic_mean": 0.375,
+        "scored_rows": 198987
+    },
+    "series_mean + global_mean_forecast": {
+        "wape_overall": 0.3925,
+        "wape_low_sale": 0.4437,
+        "wape_high_sale": 0.3529,
+        "harmonic_mean": 0.3929,
+        "scored_rows": 198987
+    },
+    "weekday_daily_mean + global_mean_forecast": {
+        "wape_overall": 0.4907,
+        "wape_low_sale": 0.4655,
+        "wape_high_sale": 0.5102,
+        "harmonic_mean": 0.4881,
+        "scored_rows": 198987
+    },
+    "weekday_mean + global_mean_forecast": {
+        "wape_overall": 0.43,
+        "wape_low_sale": 0.4708,
+        "wape_high_sale": 0.3985,
+        "harmonic_mean": 0.4311,
+        "scored_rows": 198987
+    },
+    "raw_sales + seasonal_naive_forecast": {
+        "wape_overall": 0.3976,
+        "wape_low_sale": 0.483,
+        "wape_high_sale": 0.3317,
+        "harmonic_mean": 0.3947,
+        "scored_rows": 198987
+    },
+    "global_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.4324,
+        "wape_low_sale": 0.5834,
+        "wape_high_sale": 0.3156,
+        "harmonic_mean": 0.4169,
+        "scored_rows": 198987
+    },
+    "hourly_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.4186,
+        "wape_low_sale": 0.553,
+        "wape_high_sale": 0.3147,
+        "harmonic_mean": 0.4068,
+        "scored_rows": 198987
+    },
+    "random_sampling + seasonal_naive_forecast": {
+        "wape_overall": 0.4311,
+        "wape_low_sale": 0.5741,
+        "wape_high_sale": 0.3205,
+        "harmonic_mean": 0.4178,
+        "scored_rows": 198987
+    },
+    "rolling_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.3795,
+        "wape_low_sale": 0.4901,
+        "wape_high_sale": 0.2941,
+        "harmonic_mean": 0.3715,
+        "scored_rows": 198987
+    },
+    "series_daily_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.3695,
+        "wape_low_sale": 0.4559,
+        "wape_high_sale": 0.3027,
+        "harmonic_mean": 0.3657,
+        "scored_rows": 198987
+    },
+    "series_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.3776,
+        "wape_low_sale": 0.4856,
+        "wape_high_sale": 0.294,
+        "harmonic_mean": 0.37,
+        "scored_rows": 198987
+    },
+    "weekday_daily_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.4949,
+        "wape_low_sale": 0.5336,
+        "wape_high_sale": 0.4649,
+        "harmonic_mean": 0.4962,
+        "scored_rows": 198987
+    },
+    "weekday_mean + seasonal_naive_forecast": {
+        "wape_overall": 0.4196,
+        "wape_low_sale": 0.5548,
+        "wape_high_sale": 0.315,
+        "harmonic_mean": 0.4076,
+        "scored_rows": 198987
+    },
+    "raw_sales + rolling_28d_forecast": {
+        "wape_overall": 0.3637,
+        "wape_low_sale": 0.4143,
+        "wape_high_sale": 0.3247,
+        "harmonic_mean": 0.3639,
+        "scored_rows": 198987
+    },
+    "global_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3741,
+        "wape_low_sale": 0.4557,
+        "wape_high_sale": 0.3111,
+        "harmonic_mean": 0.3712,
+        "scored_rows": 198987
+    },
+    "hourly_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3681,
+        "wape_low_sale": 0.4403,
+        "wape_high_sale": 0.3122,
+        "harmonic_mean": 0.3663,
+        "scored_rows": 198987
+    },
+    "random_sampling + rolling_28d_forecast": {
+        "wape_overall": 0.3694,
+        "wape_low_sale": 0.443,
+        "wape_high_sale": 0.3125,
+        "harmonic_mean": 0.3674,
+        "scored_rows": 198987
+    },
+    "rolling_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3488,
+        "wape_low_sale": 0.4164,
+        "wape_high_sale": 0.2966,
+        "harmonic_mean": 0.3472,
+        "scored_rows": 198987
+    },
+    "series_daily_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3466,
+        "wape_low_sale": 0.4105,
+        "wape_high_sale": 0.2972,
+        "harmonic_mean": 0.3454,
+        "scored_rows": 198987
+    },
+    "series_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3454,
+        "wape_low_sale": 0.4123,
+        "wape_high_sale": 0.2937,
+        "harmonic_mean": 0.3438,
+        "scored_rows": 198987
+    },
+    "weekday_daily_mean + rolling_28d_forecast": {
+        "wape_overall": 0.4384,
+        "wape_low_sale": 0.4415,
+        "wape_high_sale": 0.4361,
+        "harmonic_mean": 0.4386,
+        "scored_rows": 198987
+    },
+    "weekday_mean + rolling_28d_forecast": {
+        "wape_overall": 0.3683,
+        "wape_low_sale": 0.4411,
+        "wape_high_sale": 0.3121,
+        "harmonic_mean": 0.3665,
+        "scored_rows": 198987
+    }
+}
