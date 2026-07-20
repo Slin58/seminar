@@ -36,9 +36,9 @@ train_r, val_r = utils.time_split(history, horizon=7)
 print("Forecasting")
 
 forecast_models = {
-    "global_mean_forecast": forecast.global_mean,
-    "seasonal_naive_forecast": forecast.seasonal_naive,
-    "rolling_28d_forecast": forecast.rolling_28d,
+    ##"global_mean_forecast": forecast.global_mean,
+    ##"seasonal_naive_forecast": forecast.seasonal_naive,
+    ##"rolling_28d_forecast": forecast.rolling_28d,
     #"single_exponential_smoothing": forecast.single_exponential_smoothing,
     #"double_exponential_smoothing": forecast.double_exponential_smoothing,
     #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
@@ -47,8 +47,8 @@ forecast_models = {
     #"exponential_smoothing_forecast": forecast.exponential_smoothing,
     #"arima_forecast": forecast.arima, # 
     #"arima_like_fast": forecast.arima_like_fast,
-    #"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
-    #"lightgbm_forecast": forecast.lightgbm_forecast,
+    ##"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
+    "lightgbm_forecast": forecast.lightgbm_forecast,
     #"xgboost_forecast": forecast.xgboost_forecast,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
@@ -81,7 +81,7 @@ forecast_models = {
     #"dlinear_forecast": forecast.dlinear
     }
 
-recovery_models = ["sale_amount"] # if list empty all recovery methods are used
+recovery_models = [] # if list empty all recovery methods are used
 #recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
 # 4. Forecasts zu allen Recovery Werten ausführen

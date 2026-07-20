@@ -1,1 +1,1 @@
-{"global_mean_forecast": 0.347553, "seasonal_naive_forecast": 0.779607, "rolling_28d_forecast": 4.568557}
+{"global_mean_forecast": 0.56167656, "seasonal_naive_forecast": 1.21508252, "rolling_28d_forecast": 4.61126844, "arima_like_fast_vectorized": 5.48573576923077, "lightgbm_forecast": 93.75529803846153}
