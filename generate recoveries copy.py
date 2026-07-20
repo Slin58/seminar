@@ -205,11 +205,11 @@ recovery_methods = {
     #     "func": recovery_copy.autoencoder,
     #     "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
     # },
-    "lightgbm_v2": {
-        "func": recovery_copy.lightgbm_v2,
-        "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
-    },
-    "dlinear": { # nicht durchgelaufen? aber maybe wegen Windows
+    # "lightgbm_v2": {
+    #     "func": recovery_copy.lightgbm_v2,
+    #     "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
+    # },
+    "dlinear": {
         "func": recovery_copy.dlinear,
         "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
     },          

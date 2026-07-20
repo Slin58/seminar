@@ -1856,6 +1856,7 @@ def diffusion(train, val, op_sales_masked_train, op_sales_masked_val, outside_sl
     return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 # DLinear (Nils)
+# DLinear (Nils)
 class MovingAvg(nn.Module):
     """
     Moving average block to highlight the trend component.
@@ -1884,6 +1885,7 @@ class MovingAvg(nn.Module):
 
         return x
 
+
 class SeriesDecomp(nn.Module):
 
     def __init__(self, kernel_size):
@@ -1897,6 +1899,7 @@ class SeriesDecomp(nn.Module):
         seasonal = x - trend
 
         return seasonal, trend
+
 
 class DLinear(nn.Module):
 
@@ -1940,6 +1943,7 @@ class DLinear(nn.Module):
         out = seasonal + trend
 
         return out
+
 
 class RecoveryDataset(Dataset):
     """
@@ -1987,6 +1991,7 @@ class RecoveryDataset(Dataset):
 
         return (torch.from_numpy(x), torch.from_numpy(target))
 
+
 def dlinear_train(op_sales_masked_train, epochs=50, batch_size=256, lr=1e-3,
                    mask_prob=0.30, device=None, model_path="dlinear_model.pt"):
     if device is None:
@@ -2031,7 +2036,9 @@ def dlinear_train(op_sales_masked_train, epochs=50, batch_size=256, lr=1e-3,
 
     return model
 
-def dlinear(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, model_path="dlinear_model.pt"):
+
+def dlinear(train, val, op_sales_masked_train, op_sales_masked_val,
+            outside_slice_train, outside_slice_val, model_path="dlinear_model.pt"):
     """
     Recover hourly demand using a DLinear model, trained on train only.
     """
