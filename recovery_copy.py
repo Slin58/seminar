@@ -31,49 +31,29 @@ from scipy.special import log_ndtr
 from scipy.stats import norm
 
 # Einfache Imputation Methoden:
-def random_sampling(train, op_sales_masked, outside_slice, rng): # Simple recovery: random pool sampling
-    imputed = op_sales_masked.copy()
-    imputed_count = 0
-    for h in range(16):
-        col = imputed[:, h] # alle Werte der Stunde h
-        mask = np.isnan(col) # Maske für fehlende Werte in Stunde h (True für fehlende Werte, False für vorhandene Werte)
-        n_miss = mask.sum() 
-        if n_miss > 0:
-            pool = col[~mask] # alle Werte der Stunde h, die nicht fehlen
-            imputed[mask, h] = np.maximum(0, rng.choice(pool, size=n_miss, replace=True))
-
-            imputed_count += n_miss
-
-    # Rebuild corrected daily target
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = recovered_sum + outside_slice
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-def global_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, history_length):  # globaler Durchschnitt
-
+def random_sampling(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, rng):
     imputed_train = op_sales_masked_train.copy()
     imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    # Nur aus Trainingsdaten berechnen
-    mean_value = np.nanmean(imputed_train)
+    for h in range(n_hours):
+        pool = imputed_train[~np.isnan(imputed_train[:, h]), h]  # sampling pool: train only
 
-    imputed_train[np.isnan(imputed_train)] = mean_value
-    imputed_val[np.isnan(imputed_val)] = mean_value
+        mask_train = np.isnan(imputed_train[:, h])
+        if mask_train.sum() > 0:
+            imputed_train[mask_train, h] = np.maximum(0, rng.choice(pool, size=mask_train.sum(), replace=True))
 
-    recovered_daily_train = (outside_slice_train + np.nansum(imputed_train, axis=1))
+        mask_val = np.isnan(imputed_val[:, h])
+        if mask_val.sum() > 0:
+            imputed_val[mask_val, h] = np.maximum(0, rng.choice(pool, size=mask_val.sum(), replace=True))
 
-    recovered_daily_val = (outside_slice_val + np.nansum(imputed_val, axis=1))
+    recovered_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    # Leeres Array in der ursprünglichen history-Länge
-    recovered_daily = np.empty(history_length, dtype=np.float32)
-
-    # Werte direkt an den ursprünglichen Positionen einsetzen
-    recovered_daily[train.index.to_numpy()] = recovered_daily_train
-    recovered_daily[val.index.to_numpy()] = recovered_daily_val
-
-    return recovered_daily
+    return pd.concat([
+        pd.Series(recovered_train, index=train.index, name="recovered_daily_sales_random_sampling"),
+        pd.Series(recovered_val, index=val.index, name="recovered_daily_sales_random_sampling"),
+    ]).sort_index()
 
 def global_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):  # globaler Durchschnitt
     imputed_train = op_sales_masked_train.copy()
@@ -101,17 +81,8 @@ def global_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_
     print(f"recovered_daily_train_mean: {np.nanmean(recovered_daily_train):.4f}")
     print(f"recovered_daily_val_mean: {np.nanmean(recovered_daily_val):.4f}")
 
-    recovered_train_series = pd.Series(
-        recovered_daily_train,
-        index=train.index,
-        name="recovered_daily_sales_global_mean"
-    )
-
-    recovered_val_series = pd.Series(
-        recovered_daily_val,
-        index=val.index,
-        name="recovered_daily_sales_global_mean"
-    )
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_global_mean")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_global_mean")
 
     history_r = pd.concat([recovered_train_series, recovered_val_series ]).sort_index() # Series 0: Tag 1, 2, 3 - 83 Series n: Tag 1, 2, 3 - 83; series 0 84-90
 
@@ -120,1158 +91,939 @@ def global_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_
     print(f"Global mean used: {mean_value:.4f}")
     return history_r
 
-def series_daily_mean(train): # Durchschnitt derselben series_id pro Tag - Nils
-    recovered_daily = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
+def series_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
 
-    series_mean = recovered_daily.groupby(train["series_id"]).transform("mean")
+    codes_train = train["series_id"].values.astype(int)
+    codes_val = val["series_id"].values.astype(int)
+    n_series = codes_train.max() + 1
 
-    recovered_daily = recovered_daily.fillna(series_mean)
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
-    return recovered_daily
+    valid_train = ~np.isnan(imputed_train)
+    filled_train = np.where(valid_train, imputed_train, 0.0)
 
-def series_mean(train, op_sales_masked, outside_slice): # Durchschnitt derselben series_id & derselben Stunde - Nils
-    imputed = op_sales_masked.copy()
-
-    # ---------- SERIES IDS ----------
-    series_codes, unique_series = pd.factorize(train["series_id"], sort=False)
-    n_series = len(unique_series)
-    n_rows, n_hours = imputed.shape
-
-    # ---------- GLOBAL HOURLY MEANS (fallback) ----------
-    global_hourly_means = np.nanmean(imputed, axis=0)  # (n_hours,)
-
-    # ---------- PER-SERIES HOURLY MEANS (vectorized) ----------
-    valid = ~np.isnan(imputed)  # (n_rows, n_hours)
-
-    sums   = np.zeros((n_series, n_hours))
-    counts = np.zeros((n_series, n_hours))
-
-    np.add.at(sums,   series_codes, np.where(valid, imputed, 0))
-    np.add.at(counts, series_codes, valid.astype(float))
+    sums = pd.DataFrame(filled_train).groupby(codes_train).sum().reindex(range(n_series), fill_value=0).values
+    counts = pd.DataFrame(valid_train.astype(float)).groupby(codes_train).sum().reindex(range(n_series), fill_value=0).values
 
     with np.errstate(invalid="ignore"):
-        series_hourly_means = np.where(counts > 0, sums / counts, global_hourly_means)
+        series_hourly_means = np.where(counts > 0, sums / np.where(counts > 0, counts, 1), global_hourly_means)
 
-    # ---------- IMPUTE ----------
-    nan_mask = np.isnan(imputed)
-    imputed[nan_mask] = series_hourly_means[series_codes][nan_mask]
-    imputed = np.maximum(imputed, 0)
-    imputed_count = nan_mask.sum()
-    print(f"Imputed {imputed_count:,} hourly cells")
+    mask_train = np.isnan(imputed_train)
+    imputed_count_train = mask_train.sum()
+    imputed_train[mask_train] = series_hourly_means[codes_train][mask_train]
 
-    # ---------- REBUILD DAILY SALES ----------
-    recovered_daily = np.nansum(imputed, axis=1) + outside_slice
-    return recovered_daily
+    mask_val = np.isnan(imputed_val)
+    imputed_count_val = mask_val.sum()
+    imputed_val[mask_val] = series_hourly_means[codes_val][mask_val]
 
-def weekday_mean(train, op_sales_masked, outside_slice): # Durchschnitt gleicher Wochentage - Laura
-    train["weekday"] = train["dt"].dt.weekday
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    imputed = op_sales_masked.copy()
-    weekdays = train["weekday"].values
-    n_hours = imputed.shape[1]
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+    print(f"recovered_daily_train_mean: {np.nanmean(recovered_daily_train):.4f}")
+    print(f"recovered_daily_val_mean: {np.nanmean(recovered_daily_val):.4f}")
 
-    # global fallback pro Stunde
-    global_hour_means = np.nanmean(imputed, axis=0)
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_series_mean")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_series_mean")
 
-    imputed_count = np.isnan(imputed).sum()
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    for h in range(n_hours):
-        col = imputed[:, h]
+def series_daily_mean(train, val):  # Durchschnitt derselben series_id pro Tag - Nils
+    recovered_daily_train = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
+    recovered_daily_val = val["sale_amount"].where(val["is_censored"] == 0, np.nan)
 
-        for wd in range(7):
-            wd_mask = weekdays == wd
+    codes_train = train["series_id"].values.astype(int)
+    codes_val = val["series_id"].values.astype(int)
+    n_series = codes_train.max() + 1
 
-            mean_value = np.nanmean(col[wd_mask])
+    global_mean = recovered_daily_train.mean()  # globaler Fallback (nur train)
 
-            if np.isnan(mean_value):
-                mean_value = global_hour_means[h]
+    grouped = recovered_daily_train.groupby(codes_train)
+    sums = grouped.sum().reindex(range(n_series), fill_value=0).values
+    counts = grouped.count().reindex(range(n_series), fill_value=0).values
 
-            nan_mask = wd_mask & np.isnan(col)
+    series_mean = np.where(counts > 0, sums / np.where(counts > 0, counts, 1), global_mean)
 
-            col[nan_mask] = mean_value
+    recovered_daily_train = recovered_daily_train.fillna(pd.Series(series_mean[codes_train], index=train.index))
+    recovered_daily_val = recovered_daily_val.fillna(pd.Series(series_mean[codes_val], index=val.index))
 
-        imputed[:, h] = col
+    recovered_daily_train.name = "recovered_daily_sales_series_daily_mean"
+    recovered_daily_val.name = "recovered_daily_sales_series_daily_mean"
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-    print(f"Imputed {imputed_count:,} hourly cells")
+    return pd.concat([recovered_daily_train, recovered_daily_val]).sort_index()
 
-    return recovered_daily
+def weekday_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-def weekday_daily_mean(train):  # Durchschnitt desselben Wochentags - Nils
-    recovered_daily = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
+    wd_train = pd.to_datetime(train["dt"]).dt.weekday.values
+    wd_val = pd.to_datetime(val["dt"]).dt.weekday.values
 
-    dayofweek = pd.to_datetime(train["dt"]).dt.dayofweek
-    hour = pd.to_datetime(train["dt"]).dt.hour
+    valid = ~np.isnan(imputed_train)
+    filled = np.where(valid, imputed_train, 0.0)
+    sums = np.stack([np.bincount(wd_train, weights=filled[:, h], minlength=7) for h in range(n_hours)], axis=1)
+    counts = np.stack([np.bincount(wd_train, weights=valid[:, h].astype(float), minlength=7) for h in range(n_hours)], axis=1)
 
-    weekday_daily_mean_key = dayofweek.astype(str) + "_" + hour.astype(str)
-    weekday_daily_mean = recovered_daily.groupby(weekday_daily_mean_key).transform("mean")
+    if counts.sum() == 0:
+        weekday_means = np.nanmean(imputed_train, axis=0) # globaler Fallback
+    else:
+        weekday_means = sums / counts
 
-    recovered_daily = recovered_daily.fillna(weekday_daily_mean)
+    for imputed, wd in [(imputed_train, wd_train), (imputed_val, wd_val)]:
+        mask = np.isnan(imputed)
+        imputed[mask] = weekday_means[wd][mask]
+        np.maximum(imputed, 0, out=imputed)
 
-    return recovered_daily
+    recovered_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-def hourly_mean(train, op_sales_masked, outside_slice): # Durchschnitt der gleichen Stunde - Nils
-    imputed = op_sales_masked.copy()
+    return pd.concat([
+        pd.Series(recovered_train, index=train.index, name="recovered_daily_sales_weekday_mean"),
+        pd.Series(recovered_val, index=val.index, name="recovered_daily_sales_weekday_mean"),
+    ]).sort_index()
 
-    global_hourly_means = np.nanmean(imputed, axis=0)
+def weekday_daily_mean(train, val):  # Durchschnitt desselben Wochentags - Nils
+    recovered_daily_train = train["sale_amount"].where(train["is_censored"] == 0, np.nan)
+    recovered_daily_val = val["sale_amount"].where(val["is_censored"] == 0, np.nan)
 
-    nan_mask = np.isnan(imputed)
+    dayofweek_train = pd.to_datetime(train["dt"]).dt.dayofweek
+    dayofweek_val = pd.to_datetime(val["dt"]).dt.dayofweek
 
-    replacement_values = np.tile(global_hourly_means, (imputed.shape[0], 1))
+    global_mean = recovered_daily_train.mean()  # globaler Fallback (nur train)
 
-    imputed[nan_mask] = replacement_values[nan_mask]
+    # Durchschnitt pro Wochentag (nur train)
+    grouped = recovered_daily_train.groupby(dayofweek_train)
+    sums = grouped.sum().reindex(range(7), fill_value=0)
+    counts = grouped.count().reindex(range(7), fill_value=0)
 
-    imputed = np.maximum(imputed, 0)
+    weekday_mean = np.where(counts > 0, sums / counts.replace(0, 1), global_mean)
+    weekday_mean = pd.Series(weekday_mean, index=range(7))
 
-    imputed_count = nan_mask.sum()
+    recovered_daily_train = recovered_daily_train.fillna(dayofweek_train.map(weekday_mean))
+    recovered_daily_val = recovered_daily_val.fillna(dayofweek_val.map(weekday_mean))
 
-    recovered_sum = np.nansum(imputed, axis=1)
+    recovered_daily_train.index = train.index
+    recovered_daily_val.index = val.index
 
-    recovered_daily = recovered_sum + outside_slice
-    print(f"Imputed {imputed_count:,} hourly cells")
+    recovered_daily_train.name = "recovered_daily_sales_weekday_daily_mean"
+    recovered_daily_val.name = "recovered_daily_sales_weekday_daily_mean"
 
-    return recovered_daily
+    return pd.concat([recovered_daily_train, recovered_daily_val]).sort_index()
 
+def hourly_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+
+    hourly_means = np.nanmean(imputed_train, axis=0)  # fit on train only
+
+    for imputed in (imputed_train, imputed_val):
+        mask = np.isnan(imputed)
+        imputed[mask] = np.broadcast_to(hourly_means, imputed.shape)[mask]
+        np.maximum(imputed, 0, out=imputed)
+
+    recovered_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    return pd.concat([
+        pd.Series(recovered_train, index=train.index, name="recovered_daily_sales_hourly_mean"),
+        pd.Series(recovered_val, index=val.index, name="recovered_daily_sales_hourly_mean"),
+    ]).sort_index()
 
 # Moving averages: - Laura
-def rolling_mean(train, op_sales_masked, outside_slice, window=7): # SMA / Rolling Mean - Laura
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
+def rolling_mean(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, window=7):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    for h in range(imputed.shape[1]):
-        s = pd.Series(imputed[:, h])
-
-        roll = s.rolling(window=window, min_periods=1).mean()
-
-        mask = s.isna()
-
-        # falls am Anfang noch nichts vorhanden ist
-        fallback = s.mean()
-
-        imputed[mask.values, h] = roll[mask].fillna(fallback).values
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Window size used: {window}")
-
-    return recovered_daily
-
-def exponential_moving_average(train, op_sales_masked, outside_slice, alpha=0.3): # EMA - Laura
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    for h in range(imputed.shape[1]):
-        s = pd.Series(imputed[:, h])
-
-        ema = s.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
-
-        mask = s.isna()
-
-        fallback = s.mean()
-
-        imputed[mask.values, h] = ema[mask].fillna(fallback).values
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Alpha used: {alpha}")
-
-    return recovered_daily
-
-def exponential_moving_average_series(train, op_sales_masked, outside_slice, alpha=0.3): # lädt ca 2,5 min 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    series_ids = train["series_id"].values
-    n_hours = imputed.shape[1]
+    global_means = np.nanmean(imputed_train, axis=0)  # fallback, train only
 
     for h in range(n_hours):
-        s = pd.Series(imputed[:, h])
+        s_train = pd.Series(imputed_train[:, h])
+        roll_train = s_train.rolling(window, min_periods=1).mean()
+        mask_train = s_train.isna()
+        imputed_train[mask_train.values, h] = roll_train[mask_train].fillna(global_means[h]).values
 
-        ema = (
-            s.groupby(series_ids)
-            .transform(lambda x: x.ewm(alpha=alpha, adjust=False, ignore_na=True).mean())
-        )
+        s_val = pd.Series(imputed_val[:, h])
+        roll_val = s_val.rolling(window, min_periods=1).mean()
+        mask_val = s_val.isna()
+        imputed_val[mask_val.values, h] = roll_val[mask_val].fillna(global_means[h]).values
 
-        mask = s.isna()
-        fallback = s.mean()
+    recovered_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-        imputed[mask.values, h] = ema[mask].fillna(fallback).values
+    return pd.concat([
+        pd.Series(recovered_train, index=train.index, name="recovered_daily_sales_rolling_mean"),
+        pd.Series(recovered_val, index=val.index, name="recovered_daily_sales_rolling_mean"),
+    ]).sort_index()
 
-    imputed = np.maximum(imputed, 0)
+def exponential_moving_average(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, alpha=0.3):  # EMA - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-    print(f"Imputed {imputed_count:,} hourly cells")
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
+
+    for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h])
+        ema_train = s_train.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        mask_train = s_train.isna()
+        imputed_train[mask_train.values, h] = ema_train[mask_train].fillna(global_hourly_means[h]).values
+
+        s_val = pd.Series(imputed_val[:, h])
+        ema_val = s_val.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        mask_val = s_val.isna()
+        imputed_val[mask_val.values, h] = ema_val[mask_val].fillna(global_hourly_means[h]).values
+
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"Alpha used: {alpha}")
 
-    return recovered_daily  
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_exponential_moving_average")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_exponential_moving_average")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
+
+def exponential_moving_average_series(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, alpha=0.3):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
+
+    codes_train = train["series_id"].values.astype(int)
+    codes_val = val["series_id"].values.astype(int)
+
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
+
+    for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h])
+        ema_train = s_train.groupby(codes_train).transform(
+            lambda x: x.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        )
+        mask_train = s_train.isna()
+        imputed_train[mask_train.values, h] = ema_train[mask_train].fillna(global_hourly_means[h]).values
+
+        s_val = pd.Series(imputed_val[:, h])
+        ema_val = s_val.groupby(codes_val).transform(
+            lambda x: x.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        )
+        mask_val = s_val.isna()
+        imputed_val[mask_val.values, h] = ema_val[mask_val].fillna(global_hourly_means[h]).values
+
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
+
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+    print(f"Alpha used: {alpha}")
+
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_exponential_moving_average_series")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_exponential_moving_average_series")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 # Zeitreihenbasierte Recovery-Methoden: - Laura
 
-def interpolation_linear(train, op_sales_masked, outside_slice):  # Lineare Interpolation- Laura
-    # Interpolieren zwischen zwei Werten (letzter bekannter Wert und nächster bekannter Wert)
+def interpolation_linear(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):  # Lineare Interpolation - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    imputed = op_sales_masked.copy()
-
-    imputed_count = np.isnan(imputed).sum()
-
-    n_hours = imputed.shape[1]
-
-    # Jede Stunde einzeln
-    for h in range(n_hours):
-
-        s = pd.Series(imputed[:, h])
-
-        # Linear interpolieren
-        interpolated = s.interpolate(
-            method="linear",
-            limit_direction="both"
-        )
-
-        # Fallback falls komplett NaN
-        fallback = s.mean()
-
-        interpolated = interpolated.fillna(fallback)
-
-        imputed[:, h] = interpolated.values
-
-    # Sicherheit
-    imputed = np.maximum(imputed, 0)
-
-    # Rebuild corrected daily target
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-
-def interpolation_spline(train, op_sales_masked, outside_slice, order=3):  # Spline-Interpolation  Laura
-
-    imputed = op_sales_masked.copy()
-
-    imputed_count = np.isnan(imputed).sum()
-    n_hours = imputed.shape[1]
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
     for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h]).interpolate(method="linear", limit_direction="both")
+        imputed_train[:, h] = s_train.fillna(global_hourly_means[h]).values
 
-        s = pd.Series(imputed[:, h])
+        s_val = pd.Series(imputed_val[:, h]).interpolate(method="linear", limit_direction="both")
+        imputed_val[:, h] = s_val.fillna(global_hourly_means[h]).values
 
-        # Spline braucht genug bekannte Werte
-        if s.notna().sum() > order:
-            interpolated = s.interpolate(
-                method="spline",
-                order=order,
-                limit_direction="both"
-            )
-        else:
-            interpolated = s.copy()
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-        # Fallback für übrige NaNs
-        fallback = s.mean()
-        interpolated = interpolated.fillna(fallback)
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
 
-        imputed[:, h] = interpolated.values
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    imputed = np.maximum(imputed, 0)
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_interpolation_linear")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_interpolation_linear")
 
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Spline order used: {order}")
-    return recovered_daily
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
+def interpolation_spline(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, order=3):  # Spline-Interpolation - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-def interpolation_spline_series(train, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    series_ids = train["series_id"].values
-    n_hours = imputed.shape[1]
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
     for h in range(n_hours):
-        s = pd.Series(imputed[:, h])
+        s_train = pd.Series(imputed_train[:, h])
+        interp_train = s_train.interpolate(method="spline", order=order, limit_direction="both") \
+            if s_train.notna().sum() > order else s_train.copy()
+        imputed_train[:, h] = interp_train.fillna(global_hourly_means[h]).values
 
-        # Interpolation nur innerhalb derselben series_id
-        interpolated = (
-            s.groupby(series_ids)
-             .transform(
-                 lambda x: x.interpolate(
-                     method="spline",
-                     order=order,
-                     limit_direction="both"
-                 ) if x.notna().sum() > order else x
-             )
-        )
+        s_val = pd.Series(imputed_val[:, h])
+        interp_val = s_val.interpolate(method="spline", order=order, limit_direction="both") \
+            if s_val.notna().sum() > order else s_val.copy()
+        imputed_val[:, h] = interp_val.fillna(global_hourly_means[h]).values
 
-        # Fallback pro Stunde
-        fallback = s.mean()
-        interpolated = interpolated.fillna(fallback)
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-        imputed[:, h] = interpolated.values
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
 
-    imputed = np.maximum(imputed, 0)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"Spline order used: {order}")
 
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_interpolation_spline")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_interpolation_spline")
 
-def interpolation_polynomial(train, op_sales_masked, outside_slice, order=2):  # Polynomial-Interpolation - Laura
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    imputed = op_sales_masked.copy()
+def interpolation_spline_series(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, order=3):
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    imputed_count = np.isnan(imputed).sum()
+    codes_train = train["series_id"].values.astype(int)
+    codes_val = val["series_id"].values.astype(int)
 
-    n_hours = imputed.shape[1]
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
-    # Jede Stunde einzeln
+    def interp_within_series(s, codes):
+        return s.groupby(codes).transform(
+            lambda x: x.interpolate(method="spline", order=order, limit_direction="both")
+            if x.notna().sum() > order else x
+        )
+
     for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h])
+        interp_train = interp_within_series(s_train, codes_train)
+        imputed_train[:, h] = interp_train.fillna(global_hourly_means[h]).values
 
-        s = pd.Series(imputed[:, h])
+        s_val = pd.Series(imputed_val[:, h])
+        interp_val = interp_within_series(s_val, codes_val)
+        imputed_val[:, h] = interp_val.fillna(global_hourly_means[h]).values
 
-        # Polynomial braucht genug bekannte Werte
-        if s.notna().sum() > order:
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-            interpolated = s.interpolate(method="polynomial", order=order, limit_direction="both")
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
 
-        else:
-            interpolated = s.copy()
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-        # Fallback falls noch NaNs existieren
-        fallback = s.mean()
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+    print(f"Spline order used: {order}")
 
-        interpolated = interpolated.fillna(fallback)
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_interpolation_spline_series")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_interpolation_spline_series")
 
-        imputed[:, h] = interpolated.values
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    # Sicherheit
-    imputed = np.maximum(imputed, 0)
+def interpolation_polynomial(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, order=2):  # Polynomial-Interpolation - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    # Rebuild corrected daily target
-    recovered_sum = np.nansum(imputed, axis=1)
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
-    recovered_daily = outside_slice + recovered_sum
+    for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h])
+        interp_train = s_train.interpolate(method="polynomial", order=order, limit_direction="both") \
+            if s_train.notna().sum() > order else s_train.copy()
+        imputed_train[:, h] = interp_train.fillna(global_hourly_means[h]).values
 
-    print(f"Imputed {imputed_count:,} hourly cells")
+        s_val = pd.Series(imputed_val[:, h])
+        interp_val = s_val.interpolate(method="polynomial", order=order, limit_direction="both") \
+            if s_val.notna().sum() > order else s_val.copy()
+        imputed_val[:, h] = interp_val.fillna(global_hourly_means[h]).values
+
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
+
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"Polynomial order used: {order}")
 
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_interpolation_polynomial")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_interpolation_polynomial")
 
-def kalman_smoothing(train, op_sales_masked, outside_slice):  # Kalman Smoothing / State Space - Laura 
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    imputed = op_sales_masked.copy()
+def kalman_smoothing(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val):  # Kalman Smoothing / State Space - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    imputed_count = np.isnan(imputed).sum()
-    n_hours = imputed.shape[1]
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
-    for h in range(n_hours):
+    def smooth_column(col, fallback):
+        s = pd.Series(col).astype(float)
 
-        s = pd.Series(imputed[:, h]).astype(float)
-
-        # Falls zu wenig echte Werte vorhanden sind: Fallback auf Stundenmittel
         if s.notna().sum() < 10:
-            filled = s.fillna(s.mean())
-        else:
-            try:
-                # Local level model = einfaches State-Space-Modell
-                model = UnobservedComponents(s, level="local level")
-
-                result = model.fit(disp=False)
-
-                # Smoothed states als geschätzte Werte
-                smoothed = result.smoothed_state[0]
-
-                filled = s.copy()
-                filled[s.isna()] = smoothed[s.isna()]
-
-                # Falls noch NaNs übrig bleiben
-                filled = filled.fillna(s.mean())
-
-            except Exception:
-                # Falls das Modell nicht konvergiert
-                filled = s.fillna(s.mean())
-
-        imputed[:, h] = filled.values
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    return recovered_daily
-
-def kalman_like_smoothing(train, op_sales_masked, outside_slice, alpha=0.2): # - Laura 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    n_hours = imputed.shape[1]
-
-    for h in range(n_hours):
-        s = pd.Series(imputed[:, h])
-
-        # smoothing ähnlich wie einfacher State-Filter
-        smooth = s.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
-
-        mask = s.isna()
-        fallback = s.mean()
-
-        imputed[mask.values, h] = smooth[mask].fillna(fallback).values
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Alpha used: {alpha}")
-
-    return recovered_daily
-
-def stl_real(train, op_sales_masked, outside_slice, period=7): # Laura - Seasonal and Trend decomposition using Loess
-
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    n_hours = imputed.shape[1]
-
-    for h in range(n_hours):
-        s = pd.Series(imputed[:, h]).astype(float)
-
-        # STL kann keine NaNs direkt verarbeiten
-        s_filled = s.interpolate(method="linear", limit_direction="both")
-
-        fallback = s.mean()
-        s_filled = s_filled.fillna(fallback)
+            return s.fillna(fallback).values
 
         try:
-            stl = STL(s_filled, period=period, robust=True)
+            model = UnobservedComponents(s, level="local level")
+            result = model.fit(disp=False)
+            smoothed = result.smoothed_state[0]
 
-            result = stl.fit()
-
-            estimate = result.trend + result.seasonal
-
-            mask = s.isna()
-            imputed[mask.values, h] = estimate[mask].values
-
+            filled = s.copy()
+            filled[s.isna()] = smoothed[s.isna()]
+            filled = filled.fillna(fallback)
+            return filled.values
         except Exception:
-            mask = s.isna()
-            imputed[mask.values, h] = fallback
+            return s.fillna(fallback).values
 
-    imputed = np.maximum(imputed, 0)
+    for h in range(n_hours):
+        imputed_train[:, h] = smooth_column(imputed_train[:, h], global_hourly_means[h])
+        imputed_val[:, h] = smooth_column(imputed_val[:, h], global_hourly_means[h])
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    print(f"Imputed {imputed_count:,} hourly cells")
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_kalman_smoothing")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_kalman_smoothing")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
+
+
+def kalman_like_smoothing(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, alpha=0.2):  # - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
+
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
+
+    for h in range(n_hours):
+        s_train = pd.Series(imputed_train[:, h])
+        smooth_train = s_train.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        mask_train = s_train.isna()
+        imputed_train[mask_train.values, h] = smooth_train[mask_train].fillna(global_hourly_means[h]).values
+
+        s_val = pd.Series(imputed_val[:, h])
+        smooth_val = s_val.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()
+        mask_val = s_val.isna()
+        imputed_val[mask_val.values, h] = smooth_val[mask_val].fillna(global_hourly_means[h]).values
+
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
+
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+    print(f"Alpha used: {alpha}")
+
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_kalman_like")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_kalman_like")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
+
+
+def stl_real(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, period=7):  # Laura - Seasonal and Trend decomposition using Loess
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
+
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
+
+    def stl_column(col, fallback):
+        s = pd.Series(col).astype(float)
+        s_filled = s.interpolate(method="linear", limit_direction="both").fillna(fallback)
+
+        mask = s.isna()
+        try:
+            stl = STL(s_filled, period=period, robust=True)
+            result = stl.fit()
+            estimate = result.trend + result.seasonal
+            filled = s.copy()
+            filled[mask] = estimate[mask].values
+            return filled.values
+        except Exception:
+            filled = s.copy()
+            filled[mask] = fallback
+            return filled.values
+
+    for h in range(n_hours):
+        imputed_train[:, h] = stl_column(imputed_train[:, h], global_hourly_means[h])
+        imputed_val[:, h] = stl_column(imputed_val[:, h], global_hourly_means[h])
+
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
+
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"STL period used: {period}")
 
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_stl_real")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_stl_real")
 
-def stl_based(train, op_sales_masked, outside_slice, period=7):
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
+
+
+def stl_based(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, period=7):
     """
     STL-nahe Imputation:
     - nutzt Rolling Median als Trend
     - nutzt Wochentagsmuster als Saison
     - füllt NaNs mit Trend + Saison
     """
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    n_hours = imputed_train.shape[1]
 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
+    weekdays_train = pd.to_datetime(train["dt"]).dt.weekday.values
+    weekdays_val = pd.to_datetime(val["dt"]).dt.weekday.values
 
-    weekdays = train["dt"].dt.weekday.values
-    n_hours = imputed.shape[1]
+    global_hourly_means = np.nanmean(imputed_train, axis=0)  # globaler Fallback pro Stunde (nur train)
 
-    for h in range(n_hours):
-
-        s = pd.Series(imputed[:, h])
-
-        # Trend: geglätteter Verlauf
+    def trend_seasonal_column(col, weekdays, fallback):
+        s = pd.Series(col)
         trend = s.rolling(window=period, min_periods=1, center=True).median()
-
-        # detrended Werte
         detrended = s - trend
 
-        # Saison: durchschnittlicher Rest pro Wochentag
         seasonal = np.zeros(len(s))
-
         for wd in range(7):
             wd_mask = weekdays == wd
             seasonal_value = np.nanmean(detrended[wd_mask])
+            seasonal[wd_mask] = 0 if np.isnan(seasonal_value) else seasonal_value
 
-            if np.isnan(seasonal_value):
-                seasonal_value = 0
-
-            seasonal[wd_mask] = seasonal_value
-
-        # Schätzung = Trend + Saison
-        estimate = trend + seasonal
-
-        # Fallback
-        fallback = s.mean()
-        estimate = estimate.fillna(fallback)
-
+        estimate = (trend + seasonal).fillna(fallback)
         mask = s.isna()
-        imputed[mask.values, h] = estimate[mask].values
+        filled = s.copy()
+        filled[mask] = estimate[mask]
+        return filled.values
 
-    imputed = np.maximum(imputed, 0)
+    for h in range(n_hours):
+        imputed_train[:, h] = trend_seasonal_column(imputed_train[:, h], weekdays_train, global_hourly_means[h])
+        imputed_val[:, h] = trend_seasonal_column(imputed_val[:, h], weekdays_val, global_hourly_means[h])
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    print(f"Imputed {imputed_count:,} hourly cells")
+    imputed_count_train = np.isnan(op_sales_masked_train).sum()
+    imputed_count_val = np.isnan(op_sales_masked_val).sum()
+
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"Period used: {period}")
 
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_stl_based")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_stl_based")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 # ML-basierte Recovery-Methoden: - Laura
 
-def knn(train, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura KNN-Imputation - Laura
+def knn(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, n_neighbors=5):  # KNN-Imputation - Laura
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
 
-    imputed = op_sales_masked.copy()
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
 
-    imputed_count = np.isnan(imputed).sum()
-
-    # KNNImputer arbeitet spaltenweise über die 16 Stunden
     imputer = KNNImputer(n_neighbors=n_neighbors, weights="distance")
+    imputed_train = imputer.fit_transform(imputed_train)  # fit neighbor pool on train
+    imputed_val = imputer.transform(imputed_val)           # val imputed using train's fitted neighbors
 
-    imputed = imputer.fit_transform(imputed)
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    # Sicherheit: keine negativen Werte
-    imputed = np.maximum(imputed, 0)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    # Rebuild corrected daily target
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
     print(f"KNN neighbors used: {n_neighbors}")
 
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_knn")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_knn")
 
-def random_forest(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Random Forest basierte Imputation - Laura
-
-    print("\n=== Random Forest Recovery ===")
-
-    start_total = time.time()
-
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
-
-    # ------------------------------------------------------------
-    # 1. Trainingsdaten: nur sichtbare Stundenwerte
-    # ------------------------------------------------------------
-
-    rows_obs, hours_obs = np.where(~np.isnan(imputed)) # gibt alle Indizes der sichtbaren Stundenwerte zurück (rows_obs, hours_obs)
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 
-    X_obs = pd.DataFrame({
-        "hour": hours_obs,
-        "series_id": train["series_id"].values[rows_obs],
-        "day_idx": train["day_idx"].values[rows_obs],
-        "weekday": train["dt"].dt.weekday.values[rows_obs],
-        "discount": train["discount"].values[rows_obs],
-        "holiday_flag": train["holiday_flag"].values[rows_obs],
-        "activity_flag": train["activity_flag"].values[rows_obs],
-        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": train["precpt"].fillna(0).values[rows_obs],
+def _build_tree_features(df, imputed, rows, hours):
+    """Shared feature builder for random_forest / lightgbm / xgboost."""
+    dt_weekday = pd.to_datetime(df["dt"]).dt.weekday.values
+    return pd.DataFrame({
+        "hour": hours,
+        "series_id": df["series_id"].values[rows],
+        "day_idx": df["day_idx"].values[rows],
+        "weekday": dt_weekday[rows],
+        "discount": df["discount"].values[rows],
+        "holiday_flag": df["holiday_flag"].values[rows],
+        "activity_flag": df["activity_flag"].values[rows],
+        "avg_temperature": df["avg_temperature"].fillna(0).values[rows],
+        "avg_humidity": df["avg_humidity"].fillna(0).values[rows],
+        "avg_wind_level": df["avg_wind_level"].fillna(0).values[rows],
+        "precpt": df["precpt"].fillna(0).values[rows],
     })
 
-    y_obs = imputed[rows_obs, hours_obs]
+def _fit_and_impute_tree_model(model, train, val, op_sales_masked_train, op_sales_masked_val,
+                                max_train_rows, batch_size, random_state):
+    """Shared train/predict/impute logic for random_forest, lightgbm, xgboost."""
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
+
+    # ---- training data: observed hours in TRAIN only ----
+    rows_obs, hours_obs = np.where(~np.isnan(imputed_train))
+    X_obs = _build_tree_features(train, imputed_train, rows_obs, hours_obs)
+    y_obs = imputed_train[rows_obs, hours_obs]
 
     print(f"Visible training rows: {len(X_obs):,}")
 
-    # ------------------------------------------------------------
-    # 2. Training sample ziehen, damit es schneller läuft
-    # ------------------------------------------------------------
-
     if len(X_obs) > max_train_rows:
-        sample_idx = np.random.default_rng(random_state).choice(
-            len(X_obs),
-            size=max_train_rows,
-            replace=False
-        )
-
-        X_train = X_obs.iloc[sample_idx]
-        y_train = y_obs[sample_idx]
-
+        sample_idx = np.random.default_rng(random_state).choice(len(X_obs), size=max_train_rows, replace=False)
+        X_train_fit, y_train_fit = X_obs.iloc[sample_idx], y_obs[sample_idx]
     else:
-        X_train = X_obs
-        y_train = y_obs
+        X_train_fit, y_train_fit = X_obs, y_obs
 
-    print(f"Training rows used: {len(X_train):,}")
+    print(f"Training rows used: {len(X_train_fit):,}")
+    print("Training model...")
+    start_fit = time.time()
+    model.fit(X_train_fit, y_train_fit)
+    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
 
-    # ------------------------------------------------------------
-    # 3. Modell trainieren
-    # ------------------------------------------------------------
+    # ---- predict missing cells for a given split, batched ----
+    def predict_missing(df, imputed):
+        rows_miss, hours_miss = np.where(np.isnan(imputed))
+        print(f"Predicting missing rows: {len(rows_miss):,}")
+        start_pred = time.time()
+        for start in range(0, len(rows_miss), batch_size):
+            end = min(start + batch_size, len(rows_miss))
+            print(f"Predicting batch {start:,} to {end:,}")
+            batch_rows, batch_hours = rows_miss[start:end], hours_miss[start:end]
+            X_missing = _build_tree_features(df, imputed, batch_rows, batch_hours)
+            preds = model.predict(X_missing)
+            imputed[batch_rows, batch_hours] = preds
+        print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+        return imputed
 
+    imputed_train = predict_missing(train, imputed_train)
+    imputed_val = predict_missing(val, imputed_val)
+
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+
+    return imputed_train, imputed_val
+
+def random_forest(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Laura
+    print("\n=== Random Forest Recovery ===")
     model = RandomForestRegressor(n_estimators=50, max_depth=12, min_samples_leaf=20, n_jobs=-1, random_state=random_state)
 
-    print("Training Random Forest...")
-    start_fit = time.time()
+    imputed_train, imputed_val = _fit_and_impute_tree_model(
+        model, train, val, op_sales_masked_train, op_sales_masked_val, max_train_rows, batch_size, random_state
+    )
 
-    model.fit(X_train, y_train)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_random_forest")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_random_forest")
 
-    # ------------------------------------------------------------
-    # 4. Fehlende Werte vorhersagen
-    # ------------------------------------------------------------
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    rows_miss, hours_miss = np.where(np.isnan(imputed))
-
-    print(f"Predicting missing rows: {len(rows_miss):,}")
-
-    start_pred = time.time()
-
-    for start in range(0, len(rows_miss), batch_size):
-        end = min(start + batch_size, len(rows_miss))
-
-        print(f"Predicting batch {start:,} to {end:,}")
-
-        batch_rows = rows_miss[start:end]
-        batch_hours = hours_miss[start:end]
-
-        X_missing = pd.DataFrame({
-            "hour": batch_hours,
-            "series_id": train["series_id"].values[batch_rows],
-            "day_idx": train["day_idx"].values[batch_rows],
-            "weekday": train["dt"].dt.weekday.values[batch_rows],
-            "discount": train["discount"].values[batch_rows],
-            "holiday_flag": train["holiday_flag"].values[batch_rows],
-            "activity_flag": train["activity_flag"].values[batch_rows],
-            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": train["precpt"].fillna(0).values[batch_rows],
-        })
-
-        preds = model.predict(X_missing)
-
-        imputed[batch_rows, batch_hours] = preds
-
-    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # 5. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-def lightgbm(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # LightGBM-basierte Imputation - Laura
-
+def lightgbm(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Laura
     print("\n=== LightGBM Recovery ===")
+    model = lgb.LGBMRegressor(
+        n_estimators=300, learning_rate=0.05, max_depth=-1, num_leaves=64, min_child_samples=50,
+        subsample=0.8, colsample_bytree=0.8, objective="regression", n_jobs=-1,
+        random_state=random_state, verbosity=-1,
+    )
 
-    start_total = time.time()
+    imputed_train, imputed_val = _fit_and_impute_tree_model(
+        model, train, val, op_sales_masked_train, op_sales_masked_val, max_train_rows, batch_size, random_state
+    )
 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_lightgbm")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_lightgbm")
 
-    # ------------------------------------------------------------
-    # 1. Trainingsdaten: nur sichtbare Stundenwerte
-    # ------------------------------------------------------------
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    rows_obs, hours_obs = np.where(~np.isnan(imputed))
+def xgboost(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_train_rows=500_000, batch_size=500_000, random_state=42):  # Laura
+    print("\n=== XGBoost Recovery ===")
+    model = XGBRegressor(
+        n_estimators=300, learning_rate=0.05, max_depth=8, min_child_weight=10, subsample=0.8,
+        colsample_bytree=0.8, objective="reg:squarederror", n_jobs=-1,
+        random_state=random_state, tree_method="hist",
+    )
 
-    X_obs = pd.DataFrame({
-        "hour": hours_obs,
-        "series_id": train["series_id"].values[rows_obs],
-        "day_idx": train["day_idx"].values[rows_obs],
-        "weekday": train["dt"].dt.weekday.values[rows_obs],
-        "discount": train["discount"].values[rows_obs],
-        "holiday_flag": train["holiday_flag"].values[rows_obs],
-        "activity_flag": train["activity_flag"].values[rows_obs],
-        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": train["precpt"].fillna(0).values[rows_obs],
-    })
+    imputed_train, imputed_val = _fit_and_impute_tree_model(
+        model, train, val, op_sales_masked_train, op_sales_masked_val, max_train_rows, batch_size, random_state
+    )
 
-    y_obs = imputed[rows_obs, hours_obs]
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    print(f"Visible training rows: {len(X_obs):,}")
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_xgboost")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_xgboost")
 
-    # ------------------------------------------------------------
-    # 2. Sample ziehen, damit Training praktikabel bleibt
-    # ------------------------------------------------------------
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-    if len(X_obs) > max_train_rows:
-        sample_idx = np.random.default_rng(random_state).choice(
-            len(X_obs),
-            size=max_train_rows,
-            replace=False
-        )
-
-        X_train = X_obs.iloc[sample_idx]
-        y_train = y_obs[sample_idx]
-
-    else:
-        X_train = X_obs
-        y_train = y_obs
-
-    print(f"Training rows used: {len(X_train):,}")
-
-    # ------------------------------------------------------------
-    # 3. Modell trainieren
-    # ------------------------------------------------------------
-
-    model = lgb.LGBMRegressor(n_estimators=300, learning_rate=0.05, max_depth=-1, num_leaves=64, min_child_samples=50,
-        subsample=0.8, colsample_bytree=0.8, objective="regression", n_jobs=-1, random_state=random_state, verbosity=-1)
-
-    print("Training LightGBM...")
-    start_fit = time.time()
-
-    model.fit(X_train, y_train)
-
-    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # 4. Fehlende Werte vorhersagen
-    # ------------------------------------------------------------
-
-    rows_miss, hours_miss = np.where(np.isnan(imputed))
-
-    print(f"Predicting missing rows: {len(rows_miss):,}")
-
-    start_pred = time.time()
-
-    for start in range(0, len(rows_miss), batch_size):
-        end = min(start + batch_size, len(rows_miss))
-
-        print(f"Predicting batch {start:,} to {end:,}")
-
-        batch_rows = rows_miss[start:end]
-        batch_hours = hours_miss[start:end]
-
-        X_missing = pd.DataFrame({
-            "hour": batch_hours,
-            "series_id": train["series_id"].values[batch_rows],
-            "day_idx": train["day_idx"].values[batch_rows],
-            "weekday": train["dt"].dt.weekday.values[batch_rows],
-            "discount": train["discount"].values[batch_rows],
-            "holiday_flag": train["holiday_flag"].values[batch_rows],
-            "activity_flag": train["activity_flag"].values[batch_rows],
-            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": train["precpt"].fillna(0).values[batch_rows],
-        })
-
-        preds = model.predict(X_missing)
-
-        imputed[batch_rows, batch_hours] = preds
-
-    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # 5. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-def lightgbm_v2(train, op_sales_masked, outside_slice, max_train_rows=1_500_000, batch_size=500_000, random_state=42):
+def lightgbm_v2(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_train_rows=1_500_000, batch_size=500_000, random_state=42):
     print("\n=== LightGBM Recovery v2 ===")
 
-    start_total = time.time()
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
+    def build_base(df, op_sales_masked, outside_slice):
+        dt = pd.to_datetime(df["dt"])
+        visible_sum = np.nansum(op_sales_masked, axis=1)
+        visible_count = np.sum(~np.isnan(op_sales_masked), axis=1)
+        visible_mean = visible_sum / np.maximum(visible_count, 1)
+        daily_raw = df["sale_amount"].values if "sale_amount" in df.columns else np.zeros(len(df))
 
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
+        base = pd.DataFrame({
+            "series_id": df["series_id"].values,
+            "day_idx": df["day_idx"].values,
+            "weekday": dt.dt.weekday.values,
+            "month": dt.dt.month.values,
+            "discount": df["discount"].values,
+            "holiday_flag": df["holiday_flag"].values,
+            "activity_flag": df["activity_flag"].values,
+            "avg_temperature": df["avg_temperature"].fillna(0).values,
+            "avg_humidity": df["avg_humidity"].fillna(0).values,
+            "avg_wind_level": df["avg_wind_level"].fillna(0).values,
+            "precpt": df["precpt"].fillna(0).values,
+            "outside_slice": outside_slice,
+            "visible_sum": visible_sum,
+            "visible_count": visible_count,
+            "visible_mean": visible_mean,
+            "daily_raw": daily_raw,
+        })
+        for col in ["product_id", "store_id", "city_id", "management_group_id", "psd"]:
+            if col in df.columns:
+                base[col] = df[col].values
 
-    # ------------------------------------------------------------
-    # Kontext-Features pro Tageszeile
-    # ------------------------------------------------------------
-    dt = pd.to_datetime(train["dt"])
+        base["weekday_sin"] = np.sin(2 * np.pi * base["weekday"] / 7)
+        base["weekday_cos"] = np.cos(2 * np.pi * base["weekday"] / 7)
+        base["month_sin"] = np.sin(2 * np.pi * base["month"] / 12)
+        base["month_cos"] = np.cos(2 * np.pi * base["month"] / 12)
+        return base
 
-    visible_sum = np.nansum(op_sales_masked, axis=1)
-    visible_count = np.sum(~np.isnan(op_sales_masked), axis=1)
-    visible_mean = visible_sum / np.maximum(visible_count, 1)
+    base_train = build_base(train, op_sales_masked_train, outside_slice_train)
+    base_val = build_base(val, op_sales_masked_val, outside_slice_val)
 
-    daily_raw = train["sale_amount"].values if "sale_amount" in train.columns else np.zeros(len(train))
-
-    base = pd.DataFrame({
-        "series_id": train["series_id"].values,
-        "day_idx": train["day_idx"].values,
-        "weekday": dt.dt.weekday.values,
-        "month": dt.dt.month.values,
-        "discount": train["discount"].values,
-        "holiday_flag": train["holiday_flag"].values,
-        "activity_flag": train["activity_flag"].values,
-        "avg_temperature": train["avg_temperature"].fillna(0).values,
-        "avg_humidity": train["avg_humidity"].fillna(0).values,
-        "avg_wind_level": train["avg_wind_level"].fillna(0).values,
-        "precpt": train["precpt"].fillna(0).values,
-        "outside_slice": outside_slice,
-        "visible_sum": visible_sum,
-        "visible_count": visible_count,
-        "visible_mean": visible_mean,
-        "daily_raw": daily_raw,
-    })
-
-    optional_cols = [
-        "product_id",
-        "store_id",
-        "city_id",
-        "management_group_id",
-        "psd",
-    ]
-
-    for col in optional_cols:
-        if col in train.columns:
-            base[col] = train[col].values
-
-    base["weekday_sin"] = np.sin(2 * np.pi * base["weekday"] / 7)
-    base["weekday_cos"] = np.cos(2 * np.pi * base["weekday"] / 7)
-    base["month_sin"] = np.sin(2 * np.pi * base["month"] / 12)
-    base["month_cos"] = np.cos(2 * np.pi * base["month"] / 12)
-
-    # ------------------------------------------------------------
-    # Helper: Feature-Matrix bauen
-    # ------------------------------------------------------------
-    def build_X(rows, hours):
+    def build_X(base, rows, hours):
         X = base.iloc[rows].reset_index(drop=True).copy()
-
         X["hour"] = hours
         X["hour_sin"] = np.sin(2 * np.pi * X["hour"] / 24)
         X["hour_cos"] = np.cos(2 * np.pi * X["hour"] / 24)
-
         X["is_morning"] = ((X["hour"] >= 6) & (X["hour"] < 11)).astype(int)
         X["is_noon"] = ((X["hour"] >= 11) & (X["hour"] < 14)).astype(int)
         X["is_afternoon"] = ((X["hour"] >= 14) & (X["hour"] < 18)).astype(int)
         X["is_evening"] = ((X["hour"] >= 18) & (X["hour"] < 22)).astype(int)
-
         X["discount_x_hour"] = X["discount"] * X["hour"]
         X["holiday_x_hour"] = X["holiday_flag"] * X["hour"]
         X["activity_x_hour"] = X["activity_flag"] * X["hour"]
-
         return X
 
-    # ------------------------------------------------------------
-    # Trainingsdaten: nur sichtbare Stunden
-    # ------------------------------------------------------------
-    rows_obs, hours_obs = np.where(~np.isnan(imputed))
-    y_obs = imputed[rows_obs, hours_obs]
-
+    # ---- training data: observed hours in TRAIN only ----
+    rows_obs, hours_obs = np.where(~np.isnan(imputed_train))
+    y_obs = imputed_train[rows_obs, hours_obs]
     print(f"Visible training rows: {len(rows_obs):,}")
 
     if len(rows_obs) > max_train_rows:
         rng = np.random.default_rng(random_state)
         sample_idx = rng.choice(len(rows_obs), size=max_train_rows, replace=False)
-
-        rows_train = rows_obs[sample_idx]
-        hours_train = hours_obs[sample_idx]
-        y_train = y_obs[sample_idx]
+        rows_train, hours_train, y_train = rows_obs[sample_idx], hours_obs[sample_idx], y_obs[sample_idx]
     else:
-        rows_train = rows_obs
-        hours_train = hours_obs
-        y_train = y_obs
+        rows_train, hours_train, y_train = rows_obs, hours_obs, y_obs
 
-    X_train = build_X(rows_train, hours_train)
-
+    X_train = build_X(base_train, rows_train, hours_train)
     print(f"Training rows used: {len(X_train):,}")
-
-    # stärkere Gewichtung hoher Verkäufe
     sample_weight = np.sqrt(y_train + 1)
 
-    # ------------------------------------------------------------
-    # Modell
-    # ------------------------------------------------------------
     model = lgb.LGBMRegressor(
-        objective="regression_l1",
-        boosting_type="gbdt",
-
-        n_estimators=700,
-        learning_rate=0.035,
-
-        num_leaves=127,
-        max_depth=12,
-        min_child_samples=40,
-
-        subsample=0.85,
-        subsample_freq=1,
-        colsample_bytree=0.85,
-
-        reg_alpha=0.5,
-        reg_lambda=1.5,
-
-        n_jobs=-1,
-        random_state=random_state,
-        verbosity=-1
+        objective="regression_l1", boosting_type="gbdt",
+        n_estimators=700, learning_rate=0.035,
+        num_leaves=127, max_depth=12, min_child_samples=40,
+        subsample=0.85, subsample_freq=1, colsample_bytree=0.85,
+        reg_alpha=0.5, reg_lambda=1.5,
+        n_jobs=-1, random_state=random_state, verbosity=-1,
     )
 
     print("Training LightGBM v2...")
     start_fit = time.time()
-
-    model.fit(
-        X_train,
-        y_train,
-        sample_weight=sample_weight
-    )
-
+    model.fit(X_train, y_train, sample_weight=sample_weight)
     print(f"Training finished in {time.time() - start_fit:.2f} seconds")
 
-    # ------------------------------------------------------------
-    # Missing Values vorhersagen
-    # ------------------------------------------------------------
-    rows_miss, hours_miss = np.where(np.isnan(imputed))
+    def predict_missing(base, imputed):
+        rows_miss, hours_miss = np.where(np.isnan(imputed))
+        print(f"Predicting missing rows: {len(rows_miss):,}")
+        start_pred = time.time()
+        for start in range(0, len(rows_miss), batch_size):
+            end = min(start + batch_size, len(rows_miss))
+            print(f"Predicting batch {start:,} to {end:,}")
+            batch_rows, batch_hours = rows_miss[start:end], hours_miss[start:end]
+            X_missing = build_X(base, batch_rows, batch_hours)
+            preds = np.clip(model.predict(X_missing), 0, None)
+            imputed[batch_rows, batch_hours] = preds
+        print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
+        return imputed
 
-    print(f"Predicting missing rows: {len(rows_miss):,}")
+    imputed_train = predict_missing(base_train, imputed_train)
+    imputed_val = predict_missing(base_val, imputed_val)
 
-    start_pred = time.time()
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    for start in range(0, len(rows_miss), batch_size):
-        end = min(start + batch_size, len(rows_miss))
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-        print(f"Predicting batch {start:,} to {end:,}")
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
 
-        batch_rows = rows_miss[start:end]
-        batch_hours = hours_miss[start:end]
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_lightgbm_v2")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_lightgbm_v2")
 
-        X_missing = build_X(batch_rows, batch_hours)
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-        preds = model.predict(X_missing)
-        preds = np.clip(preds, 0, None)
-
-        imputed[batch_rows, batch_hours] = preds
-
-    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # Daily Sales rekonstruieren
-    # ------------------------------------------------------------
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-def xgboost(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch_size=500_000, random_state=42):  # XGBoost-basierte Imputation - Laura
-
-    print("\n=== XGBoost Recovery ===")
-
-    start_total = time.time()
-
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
-
-    # ------------------------------------------------------------
-    # 1. Trainingsdaten: nur sichtbare Stundenwerte
-    # ------------------------------------------------------------
-
-    rows_obs, hours_obs = np.where(~np.isnan(imputed))
-
-    X_obs = pd.DataFrame({
-        "hour": hours_obs,
-        "series_id": train["series_id"].values[rows_obs],
-        "day_idx": train["day_idx"].values[rows_obs],
-        "weekday": train["dt"].dt.weekday.values[rows_obs],
-        "discount": train["discount"].values[rows_obs],
-        "holiday_flag": train["holiday_flag"].values[rows_obs],
-        "activity_flag": train["activity_flag"].values[rows_obs],
-        "avg_temperature": train["avg_temperature"].fillna(0).values[rows_obs],
-        "avg_humidity": train["avg_humidity"].fillna(0).values[rows_obs],
-        "avg_wind_level": train["avg_wind_level"].fillna(0).values[rows_obs],
-        "precpt": train["precpt"].fillna(0).values[rows_obs],
-    })
-
-    y_obs = imputed[rows_obs, hours_obs]
-
-    print(f"Visible training rows: {len(X_obs):,}")
-
-    # ------------------------------------------------------------
-    # 2. Sample ziehen, damit Training praktikabel bleibt
-    # ------------------------------------------------------------
-
-    if len(X_obs) > max_train_rows:
-        sample_idx = np.random.default_rng(random_state).choice(
-            len(X_obs),
-            size=max_train_rows,
-            replace=False
-        )
-
-        X_train = X_obs.iloc[sample_idx]
-        y_train = y_obs[sample_idx]
-
-    else:
-        X_train = X_obs
-        y_train = y_obs
-
-    print(f"Training rows used: {len(X_train):,}")
-
-    # ------------------------------------------------------------
-    # 3. Modell trainieren
-    # ------------------------------------------------------------
-
-    model = XGBRegressor(n_estimators=300, learning_rate=0.05, max_depth=8, min_child_weight=10, subsample=0.8,
-        colsample_bytree=0.8, objective="reg:squarederror", n_jobs=-1, random_state=random_state, tree_method="hist")
-
-    print("Training XGBoost...")
-    start_fit = time.time()
-
-    model.fit(X_train, y_train)
-
-    print(f"Training finished in {time.time() - start_fit:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # 4. Fehlende Werte vorhersagen
-    # ------------------------------------------------------------
-
-    rows_miss, hours_miss = np.where(np.isnan(imputed))
-
-    print(f"Predicting missing rows: {len(rows_miss):,}")
-
-    start_pred = time.time()
-
-    for start in range(0, len(rows_miss), batch_size):
-        end = min(start + batch_size, len(rows_miss))
-
-        print(f"Predicting batch {start:,} to {end:,}")
-
-        batch_rows = rows_miss[start:end]
-        batch_hours = hours_miss[start:end]
-
-        X_missing = pd.DataFrame({
-            "hour": batch_hours,
-            "series_id": train["series_id"].values[batch_rows],
-            "day_idx": train["day_idx"].values[batch_rows],
-            "weekday": train["dt"].dt.weekday.values[batch_rows],
-            "discount": train["discount"].values[batch_rows],
-            "holiday_flag": train["holiday_flag"].values[batch_rows],
-            "activity_flag": train["activity_flag"].values[batch_rows],
-            "avg_temperature": train["avg_temperature"].fillna(0).values[batch_rows],
-            "avg_humidity": train["avg_humidity"].fillna(0).values[batch_rows],
-            "avg_wind_level": train["avg_wind_level"].fillna(0).values[batch_rows],
-            "precpt": train["precpt"].fillna(0).values[batch_rows],
-        })
-
-        preds = model.predict(X_missing)
-
-        imputed[batch_rows, batch_hours] = preds
-
-    print(f"Prediction finished in {time.time() - start_pred:.2f} seconds")
-
-    # ------------------------------------------------------------
-    # 5. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-
-    return recovered_daily
-
-def iterative(train, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
-
+def iterative(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_iter=5, random_state=42):  # Laura
     print("\n=== Iterative Imputation Recovery ===")
 
-    start_total = time.time()
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
     print(f"Max iterations: {max_iter}")
 
     estimator = ExtraTreesRegressor(n_estimators=30, max_depth=10, min_samples_leaf=20, n_jobs=-1, random_state=random_state)
+    imputer = IterativeImputer(
+        estimator=estimator, max_iter=max_iter, initial_strategy="mean",
+        imputation_order="ascending", random_state=random_state, skip_complete=True, verbose=1,
+    )
 
-    imputer = IterativeImputer(estimator=estimator, max_iter=max_iter, initial_strategy="mean", imputation_order="ascending", random_state=random_state, skip_complete=True, verbose=1)
-
-    print("Starting iterative imputation...")
+    print("Starting iterative imputation (fit on train)...")
     start_impute = time.time()
+    imputed_train = imputer.fit_transform(imputed_train)  # fits the per-column estimators on train
+    print(f"Train iterative imputation finished in {time.time() - start_impute:.2f} seconds")
 
-    imputed = imputer.fit_transform(imputed)
+    print("Applying fitted imputer to val...")
+    start_val = time.time()
+    imputed_val = imputer.transform(imputed_val)  # reuses train-fitted estimators, no refitting on val
+    print(f"Val iterative imputation finished in {time.time() - start_val:.2f} seconds")
 
-    print(f"Iterative imputation finished in {time.time() - start_impute:.2f} seconds")
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    imputed = np.maximum(imputed, 0)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
 
-    print(f"Imputed {imputed_count:,} hourly cells")
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_iterative")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_iterative")
 
-    return recovered_daily
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
-def iterative_improved(train, op_sales_masked, outside_slice, max_iter=5, random_state=42): #lädt über 5 Stunden dass hier: === Running recovery method: iterative_improved at 2026-06-12 14:42:30.694867 === === Improved Iterative Imputation Recovery === Starting iterative imputation... [IterativeImputer] Completing matrix with shape (4500000, 16) [IterativeImputer] Change: 14.01937198638916, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 4.824539661407471, scaled tolerance: 0.01690000109374523 [IterativeImputer] Change: 2.6994433403015137, scaled tolerance: 0.01690000109374523
+def iterative_improved(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, max_iter=5, random_state=42):  # Laura
     print("\n=== Improved Iterative Imputation Recovery ===")
-    start_total = time.time()
 
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    # Erst grob mit Stundenmittel füllen als stabilerer Start
-    hour_means = np.nanmean(imputed, axis=0)
-    initial = np.where(np.isnan(imputed), hour_means, imputed)
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
 
     estimator = ExtraTreesRegressor(n_estimators=50, max_depth=12, min_samples_leaf=10, n_jobs=-1, random_state=random_state)
+    imputer = IterativeImputer(
+        estimator=estimator, max_iter=max_iter, initial_strategy="mean",
+        imputation_order="roman", random_state=random_state, skip_complete=True, verbose=1,
+    )
 
-    imputer = IterativeImputer(estimator=estimator, max_iter=max_iter, initial_strategy="mean", imputation_order="roman", 
-                               random_state=random_state, skip_complete=True, verbose=1)
+    print("Starting iterative imputation (fit on train)...")
+    imputed_train_new = imputer.fit_transform(imputed_train)
+    missing_mask_train = np.isnan(op_sales_masked_train)
+    imputed_train[missing_mask_train] = imputed_train_new[missing_mask_train]
 
-    print("Starting iterative imputation...")
-    imputed_new = imputer.fit_transform(imputed)
+    print("Applying fitted imputer to val...")
+    imputed_val_new = imputer.transform(imputed_val)
+    missing_mask_val = np.isnan(op_sales_masked_val)
+    imputed_val[missing_mask_val] = imputed_val_new[missing_mask_val]
 
-    # Nur ursprüngliche NaNs ersetzen, sichtbare Werte behalten
-    missing_mask = np.isnan(op_sales_masked)
-    imputed[missing_mask] = imputed_new[missing_mask]
+    imputed_train = np.maximum(imputed_train, 0)
+    imputed_val = np.maximum(imputed_val, 0)
 
-    imputed = np.maximum(imputed, 0)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    recovered_sum = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
 
-    print(f"Imputed {imputed_count:,} hourly cells")
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_iterative_improved")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_iterative_improved")
 
-    return recovered_daily
-
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 # Spezifische Demandrevovery Modelle: - Nils
 
@@ -1758,49 +1510,62 @@ def bayesian(train):  # Bayesisches Modell mit NUTS
 
 # Deep Learning basierte Recovery-Methoden: - Nils 
 
-def autoencoder(train, op_sales_masked, outside_slice, latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
+def autoencoder(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val,
+                 latent_dim=8, epochs=20, lr=1e-3, batch_size=256, device=None):
 
-    # Architecture: input = [16 sales + 16 mask flags + 7 covariates] = 39-dim
-    # Encoder: 39 → 64 → latent_dim
-    # Decoder: latent_dim → 64 → 16  (reconstructs all hours)
-    # Loss: MSE on observed hours only (same censored-loss idea as transformer)
+    # Architecture: input = [16 sales + 16 mask flags + 6 covariates] = 38-dim
+    # Encoder: 38 → 64 → 32 → latent_dim
+    # Decoder: latent_dim → 32 → 64 → 16  (reconstructs all hours)
+    # Loss: MSE on observed hours only, trained on TRAIN only
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    N, H = op_sales_masked.shape
+    H = op_sales_masked_train.shape[1]
 
-    # ── Covariates (same as transformer version) ──────────────────────────────
-    def norm(x): return (x - x.mean()) / (x.std() + 1e-8)
+    # ── Covariate normalisation stats fit on TRAIN only ────────────────────────
+    def fit_norm(x):
+        return x.mean(), x.std() + 1e-8
 
-    cov = np.column_stack([
-        norm(train["discount"].values),
-        train["holiday_flag"].values,
-        train["activity_flag"].values,
-        norm(train["avg_temperature"].values),
-        norm(train["avg_humidity"].values),
-        norm(train["precpt"].values),
-    ]).astype(np.float32)                          # (N, 6)
+    def apply_norm(x, mu, sigma):
+        return (x - mu) / sigma
 
-    # ── Normalise sales ───────────────────────────────────────────────────────
-    observed = op_sales_masked[~np.isnan(op_sales_masked)]
+    mu_d, sd_d = fit_norm(train["discount"].values)
+    mu_t, sd_t = fit_norm(train["avg_temperature"].values)
+    mu_h, sd_h = fit_norm(train["avg_humidity"].values)
+    mu_p, sd_p = fit_norm(train["precpt"].values)
+
+    def build_covariates(df, mu_d, sd_d, mu_t, sd_t, mu_h, sd_h, mu_p, sd_p):
+        return np.column_stack([
+            apply_norm(df["discount"].values, mu_d, sd_d),
+            df["holiday_flag"].values,
+            df["activity_flag"].values,
+            apply_norm(df["avg_temperature"].values, mu_t, sd_t),
+            apply_norm(df["avg_humidity"].values, mu_h, sd_h),
+            apply_norm(df["precpt"].values, mu_p, sd_p),
+        ]).astype(np.float32)
+
+    cov_train = build_covariates(train, mu_d, sd_d, mu_t, sd_t, mu_h, sd_h, mu_p, sd_p)  # (N_train, 6)
+    cov_val = build_covariates(val, mu_d, sd_d, mu_t, sd_t, mu_h, sd_h, mu_p, sd_p)      # (N_val, 6)
+
+    # ── Sales normalisation stats fit on TRAIN's observed hours only ──────────
+    observed = op_sales_masked_train[~np.isnan(op_sales_masked_train)]
     sale_mean, sale_std = observed.mean(), observed.std() + 1e-8
-    sales_norm = (op_sales_masked - sale_mean) / sale_std
-    obs_mask   = (~np.isnan(sales_norm)).astype(np.float32)   # 1=observed, 0=censored
-    sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
 
-    # Input: sales (16) + obs_mask (16) + covariates (6) = 38
-    X    = np.concatenate([sales_input, obs_mask, cov], axis=1)   # (N, 38)
-    tgt  = sales_norm.copy().astype(np.float32)                    # (N, 16) — NaN in censored
+    sales_norm_train = (op_sales_masked_train - sale_mean) / sale_std
+    obs_mask_train = (~np.isnan(sales_norm_train)).astype(np.float32)
+    sales_input_train = np.nan_to_num(sales_norm_train, nan=0.0).astype(np.float32)
 
-    T_X    = torch.tensor(X)
-    T_tgt  = torch.tensor(tgt)
-    T_obs  = torch.tensor(obs_mask, dtype=torch.bool)
+    X_train = np.concatenate([sales_input_train, obs_mask_train, cov_train], axis=1)  # (N_train, 38)
+    tgt_train = sales_norm_train.copy().astype(np.float32)
 
-    loader = DataLoader(TensorDataset(T_X, T_tgt, T_obs),
-                        batch_size=batch_size, shuffle=True)
+    T_X = torch.tensor(X_train)
+    T_tgt = torch.tensor(tgt_train)
+    T_obs = torch.tensor(obs_mask_train, dtype=torch.bool)
 
-    # ── Model ─────────────────────────────────────────────────────────────────
+    loader = DataLoader(TensorDataset(T_X, T_tgt, T_obs), batch_size=batch_size, shuffle=True)
+
+    # ── Model ───────────────────────────────────────────────────────────────
     class DemandAE(nn.Module):
         def __init__(self):
             super().__init__()
@@ -1811,9 +1576,10 @@ def autoencoder(train, op_sales_masked, outside_slice, latent_dim=8, epochs=20, 
             )
             self.decoder = nn.Sequential(
                 nn.Linear(latent_dim, 32), nn.GELU(),
-                nn.Linear(32, 64),         nn.GELU(),
-                nn.Linear(64, H),          # reconstruct all 16 hours
+                nn.Linear(32, 64), nn.GELU(),
+                nn.Linear(64, H),
             )
+
         def forward(self, x):
             return self.decoder(self.encoder(x))
 
@@ -1821,691 +1587,143 @@ def autoencoder(train, op_sales_masked, outside_slice, latent_dim=8, epochs=20, 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # ── Train ─────────────────────────────────────────────────────────────────
+    # ── Train (train only) ─────────────────────────────────────────────────────
     print(f"Training autoencoder on {device}  |  params: {sum(p.numel() for p in model.parameters()):,}")
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss, total_n = 0.0, 0
         for x, tgt_b, obs_b in loader:
             x, tgt_b, obs_b = x.to(device), tgt_b.to(device), obs_b.to(device)
-            pred = model(x)                              # (B, 16)
+            pred = model(x)
             loss = nn.functional.huber_loss(pred[obs_b], tgt_b[obs_b], delta=1.0)
-            optimizer.zero_grad(); loss.backward()
+            optimizer.zero_grad()
+            loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             total_loss += loss.item() * obs_b.sum().item()
-            total_n    += obs_b.sum().item()
+            total_n += obs_b.sum().item()
         scheduler.step()
         if epoch % 5 == 0 or epoch == 1:
             print(f"  Epoch {epoch:02d}/{epochs}  loss={total_loss/max(total_n,1):.5f}")
 
-    # ── Inference ─────────────────────────────────────────────────────────────
-    model.eval()
-    preds = []
-    with torch.no_grad():
-        for (x,) in DataLoader(TensorDataset(T_X), batch_size=batch_size):
-            preds.append(model(x.to(device)).cpu().numpy())
-    preds_denorm = (np.concatenate(preds) * sale_std + sale_mean).clip(0)
+    # ── Inference helper, used for both train and val ──────────────────────
+    def infer(op_sales_masked, cov):
+        sales_norm = (op_sales_masked - sale_mean) / sale_std
+        obs_mask = (~np.isnan(sales_norm)).astype(np.float32)
+        sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
 
-    imputed = op_sales_masked.copy()
-    nan_mask = np.isnan(imputed)
-    imputed_count = nan_mask.sum()
-    imputed[nan_mask] = preds_denorm[nan_mask]
+        X = np.concatenate([sales_input, obs_mask, cov], axis=1)
+        T_X_ = torch.tensor(X)
 
-    # ── Rebuild daily (same as global_mean / transformer) ─────────────────────
-    recovered_sum   = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+        model.eval()
+        preds = []
+        with torch.no_grad():
+            for (x,) in DataLoader(TensorDataset(T_X_), batch_size=batch_size):
+                preds.append(model(x.to(device)).cpu().numpy())
+        preds_denorm = (np.concatenate(preds) * sale_std + sale_mean).clip(0)
 
-    print(f"Imputed {imputed_count:,} hourly cells")
-    return recovered_daily
+        imputed = op_sales_masked.copy()
+        nan_mask = np.isnan(imputed)
+        imputed[nan_mask] = preds_denorm[nan_mask]
+        return imputed, nan_mask.sum()
 
+    imputed_train, imputed_count_train = infer(op_sales_masked_train, cov_train)
+    imputed_val, imputed_count_val = infer(op_sales_masked_val, cov_val)
 
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_autoencoder")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_autoencoder")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 #def transformer(train): # SAITS, BRITS, GRIN, CSDI
 
-def transformer_old(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
-
-    print("\n=== Transformer Recovery ===")
-    start_total = time.time()
-
-    torch.manual_seed(random_state)
-
-    imputed = op_sales_masked.copy()
-    imputed_count = np.isnan(imputed).sum()
-
-    # ------------------------------------------------------------
-    # 1. Trainingsdaten: nur vollständig sichtbare Profile
-    # ------------------------------------------------------------
-
-    clean_mask = ~np.isnan(imputed).any(axis=1)
-    clean_profiles = imputed[clean_mask]
-
-    print(f"Clean training profiles: {len(clean_profiles):,}")
-    print(f"Missing values to impute: {imputed_count:,}")
-
-    # ------------------------------------------------------------
-    # 2. Skalieren
-    # ------------------------------------------------------------
-
-    # Keep rows that have at least one non-NaN value for training
-    clean_mask = ~np.isnan(imputed).all(axis=1)
-    clean_profiles = imputed[clean_mask]
-
-    clean_profiles_filled = np.where(np.isnan(clean_profiles), np.nanmean(clean_profiles, axis=0), clean_profiles)
-
-    X_train, y_train = train_test_split(clean_profiles_filled, test_size=0.1, random_state=random_state)
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    y_train_scaled = scaler.transform(y_train)
-
-    dataset = TensorDataset(X_train_scaled, y_train_scaled)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    # ------------------------------------------------------------
-    # 3. Einfaches Transformer Autoencoder Modell
-    # ------------------------------------------------------------
-
-    class Transformer(nn.Module):
-        def __init__(self, seq_len=24, d_model=32, nhead=4, num_layers=2):
-            super().__init__()
-
-            self.input_proj = nn.Linear(1, d_model)
-
-            encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=64, batch_first=True)
-
-            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-            self.output_proj = nn.Linear(d_model, 1)
-
-        def forward(self, x):
-            # x shape: (batch, 24)
-            x = x.unsqueeze(-1)          # (batch, 24, 1)
-            x = self.input_proj(x)       # (batch, 24, d_model)
-            x = self.encoder(x)          # (batch, 24, d_model)
-            x = self.output_proj(x)      # (batch, 24, 1)
-            return x.squeeze(-1)         # (batch, 24)
-
-    model = Transformer(seq_len=imputed.shape[1])
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    loss_fn = nn.MSELoss()
-
-    # ------------------------------------------------------------
-    # 4. Training
-    # ------------------------------------------------------------
-
-    print("Training Transformer...")
-
-    for epoch in range(epochs):
-        epoch_loss = 0
-
-        for xb, yb in loader:
-            optimizer.zero_grad()
-
-            pred = model(xb)
-
-            loss = loss_fn(pred, yb)
-
-            loss.backward()
-            optimizer.step()
-
-            epoch_loss += loss.item()
-
-        print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss / len(loader):.6f}")
-
-    # ------------------------------------------------------------
-    # 5. Fehlende Stunden rekonstruieren
-    # ------------------------------------------------------------
-
-    print("Imputing missing values...")
-
-    hour_mean = scaler.mean_
-
-    for start in range(0, len(imputed), batch_size):
-        end = min(start + batch_size, len(imputed))
-
-        batch = imputed[start:end]
-
-        missing_mask = np.isnan(batch)
-
-        if not missing_mask.any():
-            continue
-
-        # NaNs vor Modellinput mit Stundenmittel füllen
-        batch_filled = np.where(missing_mask, hour_mean, batch)
-
-        batch_scaled = scaler.transform(batch_filled)
-
-        xb = torch.tensor(batch_scaled, dtype=torch.float32)
-
-        with torch.no_grad():
-            reconstructed_scaled = model(xb).numpy()
-
-        reconstructed = scaler.inverse_transform(reconstructed_scaled)
-
-        batch[missing_mask] = reconstructed[missing_mask]
-
-        imputed[start:end] = batch
-
-    # ------------------------------------------------------------
-    # 6. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    imputed = np.maximum(imputed, 0)
-
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Epochs used: {epochs}")
-
-    return recovered_daily
-
-def transformer_old2(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):
-
-    print("\n=== Transformer Recovery ===")
-    start_total = time.time()
-
-    torch.manual_seed(random_state)
-    np.random.seed(random_state)
-
-    imputed = op_sales_masked.copy()
-    imputed_count = int(np.isnan(imputed).sum())
-    seq_len = imputed.shape[1]
-
-    # ------------------------------------------------------------
-    # 1. Trainingsdaten: nur vollständig sichtbare Profile
-    # ------------------------------------------------------------
-
-    clean_mask = ~np.isnan(imputed).any(axis=1)   # rows with NO missing values
-    clean_profiles = imputed[clean_mask]            # shape: (n_clean, seq_len)
-
-    print(f"Clean training profiles: {len(clean_profiles):,}")
-    print(f"Missing values to impute: {imputed_count:,}")
-
-    if len(clean_profiles) == 0:
-        raise ValueError("No fully clean profiles found — cannot train.")
-
-    # ------------------------------------------------------------
-    # 2. Skalieren
-    # ------------------------------------------------------------
-
-    X_train, X_val = train_test_split(clean_profiles, test_size=0.1, random_state=random_state)
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)   # fit only on train split
-    X_val_scaled   = scaler.transform(X_val)
-
-    hour_mean_scaled = np.zeros(seq_len)             # mean in scaled space = 0 by definition
-
-    # ------------------------------------------------------------
-    # 3. Masked Autoencoding Dataset
-    #    Input:  clean profile with ~30 % positions zeroed out (= scaled mean)
-    #    Target: original clean profile
-    #    → model learns to recover masked positions from context
-    # ------------------------------------------------------------
-
-    def make_corrupted(X_scaled, mask_ratio=0.3):
-        corrupted = X_scaled.copy()
-        mask = np.random.rand(*corrupted.shape) < mask_ratio   # True = position is masked
-        corrupted[mask] = 0.0                                  # 0 = scaled mean
-        return corrupted.astype(np.float32), mask.astype(np.float32)
-
-    X_train_corrupted, train_masks = make_corrupted(X_train_scaled)
-    X_val_corrupted,   val_masks   = make_corrupted(X_val_scaled)
-
-    train_dataset = TensorDataset(
-        torch.tensor(X_train_corrupted),
-        torch.tensor(X_train_scaled.astype(np.float32)),
-        torch.tensor(train_masks),
-    )
-    val_dataset = TensorDataset(
-        torch.tensor(X_val_corrupted),
-        torch.tensor(X_val_scaled.astype(np.float32)),
-        torch.tensor(val_masks),
-    )
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False)
-
-    # ------------------------------------------------------------
-    # 4. Transformer
-    # ------------------------------------------------------------
-
-    class Transformer(nn.Module):
-        def __init__(self, seq_len, d_model=64, nhead=4, num_layers=2, dropout=0.1):
-            super().__init__()
-            self.input_proj  = nn.Linear(1, d_model)
-            encoder_layer    = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead,
-                dim_feedforward=128, dropout=dropout,
-                batch_first=True
-            )
-            self.encoder     = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-            self.output_proj = nn.Linear(d_model, 1)
-
-        def forward(self, x):
-            # x: (batch, seq_len)
-            x = x.unsqueeze(-1)       # (batch, seq_len, 1)
-            x = self.input_proj(x)    # (batch, seq_len, d_model)
-            x = self.encoder(x)       # (batch, seq_len, d_model)
-            x = self.output_proj(x)   # (batch, seq_len, 1)
-            return x.squeeze(-1)      # (batch, seq_len)
-
-    model     = Transformer(seq_len=seq_len)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
-    loss_fn   = nn.MSELoss(reduction="none")   # element-wise so we can mask
-
-    # ------------------------------------------------------------
-    # 5. Training  (loss only on corrupted positions)
-    # ------------------------------------------------------------
-
-    print("Training Transformer...")
-
-    best_val_loss = float("inf")
-    best_state    = None
-
-    for epoch in range(epochs):
-
-        # --- train ---
-        model.train()
-        train_loss = 0.0
-        for xb, yb, mb in train_loader:
-            optimizer.zero_grad()
-            pred        = model(xb)                        # (batch, seq_len)
-            elem_loss   = loss_fn(pred, yb)                # (batch, seq_len)
-            masked_loss = (elem_loss * mb).sum() / mb.sum().clamp(min=1)
-            masked_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            train_loss += masked_loss.item()
-
-        train_loss /= len(train_loader)
-
-        # --- validate ---
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for xb, yb, mb in val_loader:
-                pred        = model(xb)
-                elem_loss   = loss_fn(pred, yb)
-                masked_loss = (elem_loss * mb).sum() / mb.sum().clamp(min=1)
-                val_loss   += masked_loss.item()
-
-        val_loss /= len(val_loader)
-        scheduler.step(val_loss)
-
-        print(f"Epoch {epoch + 1:>3}/{epochs}  train={train_loss:.6f}  val={val_loss:.6f}")
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state    = {k: v.clone() for k, v in model.state_dict().items()}
-
-    # restore best checkpoint
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        print(f"Restored best model (val_loss={best_val_loss:.6f})")
-
-    # ------------------------------------------------------------
-    # 6. Fehlende Stunden rekonstruieren
-    # ------------------------------------------------------------
-
-    print("Imputing missing values...")
-    model.eval()
-
-    for start in range(0, len(imputed), batch_size):
-        end   = min(start + batch_size, len(imputed))
-        batch = imputed[start:end].copy()
-
-        missing_mask = np.isnan(batch)
-
-        if not missing_mask.any():
-            continue
-
-        # fill NaNs with per-hour mean before scaling
-        batch_filled = np.where(missing_mask, scaler.mean_, batch)
-        batch_scaled = scaler.transform(batch_filled).astype(np.float32)
-
-        xb = torch.tensor(batch_scaled)
-
-        with torch.no_grad():
-            reconstructed_scaled = model(xb).numpy()
-
-        reconstructed = scaler.inverse_transform(reconstructed_scaled)
-
-        # write back ONLY the originally missing positions
-        batch[missing_mask] = reconstructed[missing_mask]
-        imputed[start:end]  = batch
-
-    # ------------------------------------------------------------
-    # 7. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    imputed          = np.maximum(imputed, 0)
-    recovered_sum    = np.nansum(imputed, axis=1)
-    recovered_daily  = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    print(f"Epochs used: {epochs}")
-    return recovered_daily
-
-def transformer_old3(train, op_sales_masked, outside_slice, epochs=20, batch_size=512, random_state=42):
+def transformer(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4,
+                 batch_size=256, device=None):
     """
-    Denoising Transformer for hourly sales imputation.
-
-    op_sales_masked : np.ndarray, shape (n_days, n_hours)
-                      Hourly sales profiles; NaN = censored hour.
-    outside_slice   : np.ndarray, shape (n_days,)
-                      Sales recorded outside the tracked hour window.
-    train         : pd.DataFrame
-                      Full dataset; result written to 'recovered_daily_sales_transformer'.
-
-    Approach — BERT-style masked prediction:
-      1. Train only on fully observed profiles.
-      2. During training: randomly mask ~30 % of hours (replace with learned [MASK] token).
-         Loss computed only on masked positions → model learns to infer missing hours
-         from the surrounding hourly context.
-      3. At inference: replace NaN positions with [MASK], reconstruct, write back only
-         the originally missing positions.
-    """
-
-    print("\n=== Transformer Recovery ===")
-    start_total = time.time()
-
-    torch.manual_seed(random_state)
-    np.random.seed(random_state)
-
-    n_days, n_hours = op_sales_masked.shape
-
-    # ------------------------------------------------------------------ #
-    # 1.  Collect fully observed profiles for training                    #
-    # ------------------------------------------------------------------ #
-
-    fully_observed = ~np.isnan(op_sales_masked).any(axis=1)
-    clean = op_sales_masked[fully_observed].astype(np.float32)   # (n_clean, n_hours)
-
-    print(f"Fully observed profiles : {len(clean):,} / {n_days:,}")
-    print(f"Missing hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
-
-    if len(clean) == 0:
-        raise ValueError("No fully observed profiles — cannot train.")
-
-    # ------------------------------------------------------------------ #
-    # 2.  Scale (fit on clean profiles)                                   #
-    # ------------------------------------------------------------------ #
-
-    scaler = StandardScaler()
-    clean_scaled = scaler.fit_transform(clean).astype(np.float32)   # (n_clean, n_hours)
-
-    # ------------------------------------------------------------------ #
-    # 3.  Model                                                           #
-    # ------------------------------------------------------------------ #
-
-    class HourlySalesTransformer(nn.Module):
-        """
-        BERT-style Transformer for hourly profile imputation.
-
-        Each hour is treated as one token.  A learnable [MASK] embedding
-        replaces censored positions.  Positional encodings give the model
-        awareness of time-of-day structure.
-        """
-
-        def __init__(self, n_hours, d_model=64, nhead=4, num_layers=3, dropout=0.1):
-            super().__init__()
-
-            self.n_hours = n_hours
-            self.d_model = d_model
-
-            # project scalar sales value → d_model
-            self.value_proj = nn.Linear(1, d_model)
-
-            # learnable mask token (replaces censored hours)
-            self.mask_token = nn.Parameter(torch.zeros(d_model))
-
-            # learnable positional encoding (one per hour)
-            self.pos_emb = nn.Embedding(n_hours, d_model)
-
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=d_model * 4,
-                dropout=dropout,
-                activation="gelu",
-                batch_first=True,
-                norm_first=True,        # Pre-LN: more stable training
-            )
-            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False,)
-
-            self.head = nn.Sequential(
-                nn.LayerNorm(d_model),
-                nn.Linear(d_model, d_model // 2),
-                nn.GELU(),
-                nn.Linear(d_model // 2, 1),
-            )
-
-        def forward(self, x, mask):
-            """
-            x    : (batch, n_hours)   — scaled sales values; arbitrary at masked positions
-            mask : (batch, n_hours)   — 1.0 = position is masked (to be predicted)
-            """
-            batch = x.size(0)
-            pos   = torch.arange(self.n_hours, device=x.device)   # (n_hours,)
-
-            # project observed values
-            tokens = self.value_proj(x.unsqueeze(-1))              # (batch, n_hours, d_model)
-
-            # replace masked positions with learned mask token
-            mask_expanded = mask.unsqueeze(-1).bool()              # (batch, n_hours, 1)
-            mask_tok       = self.mask_token.view(1, 1, -1).expand(batch, self.n_hours, -1)
-            tokens         = torch.where(mask_expanded, mask_tok, tokens)
-
-            # add positional encoding
-            tokens = tokens + self.pos_emb(pos).unsqueeze(0)       # (batch, n_hours, d_model)
-
-            # transformer
-            out = self.encoder(tokens)                             # (batch, n_hours, d_model)
-
-            # project to scalar
-            return self.head(out).squeeze(-1)                      # (batch, n_hours)
-
-    model = HourlySalesTransformer(n_hours=n_hours).to("cpu")
-
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model parameters        : {total_params:,}")
-
-    # ------------------------------------------------------------------ #
-    # 4.  Training                                                        #
-    # ------------------------------------------------------------------ #
-
-    X_train, X_val = train_test_split(clean_scaled, test_size=0.1, random_state=random_state)
-
-    X_train_t = torch.tensor(X_train)
-    X_val_t   = torch.tensor(X_val)
-
-    train_ds = TensorDataset(X_train_t)
-    val_ds   = TensorDataset(X_val_t)
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  drop_last=False)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, drop_last=False)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
-
-    MASK_RATIO = 0.30
-
-    def masked_loss(pred, target, mask):
-        """MSE only on masked positions."""
-        err = (pred - target) ** 2
-        denom = mask.sum().clamp(min=1)
-        return (err * mask).sum() / denom
-
-    best_val  = float("inf")
-    best_state = None
-
-    print(f"\nTraining for up to {epochs} epochs  (mask ratio={MASK_RATIO:.0%})")
-    print(f"{'Epoch':>6}  {'Train':>10}  {'Val':>10}  {'LR':>10}")
-    print("-" * 42)
-
-    for epoch in range(1, epochs + 1):
-
-        # --- train ---
-        model.train()
-        tr_loss = 0.0
-        for (xb,) in train_loader:
-            rand_mask = (torch.rand_like(xb) < MASK_RATIO).float()
-            optimizer.zero_grad()
-            pred = model(xb, rand_mask)
-            loss = masked_loss(pred, xb, rand_mask)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            tr_loss += loss.item()
-        tr_loss /= len(train_loader)
-
-        # --- validate ---
-        model.eval()
-        vl_loss = 0.0
-        with torch.no_grad():
-            for (xb,) in val_loader:
-                rand_mask = (torch.rand_like(xb) < MASK_RATIO).float()
-                pred      = model(xb, rand_mask)
-                vl_loss  += masked_loss(pred, xb, rand_mask).item()
-        vl_loss /= len(val_loader)
-
-        scheduler.step(vl_loss)
-        lr = optimizer.param_groups[0]["lr"]
-
-        print(f"{epoch:>6}  {tr_loss:>10.6f}  {vl_loss:>10.6f}  {lr:>10.2e}")
-
-        if vl_loss < best_val:
-            best_val   = vl_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-    model.load_state_dict(best_state)
-    print(f"\nRestored best checkpoint  (val={best_val:.6f})")
-
-    # ------------------------------------------------------------------ #
-    # 5.  Imputation                                                      #
-    # ------------------------------------------------------------------ #
-
-    print("Imputing missing values...")
-    model.eval()
-
-    imputed = op_sales_masked.copy().astype(np.float64)
-
-    for start in range(0, n_days, batch_size):
-        end   = min(start + batch_size, n_days)
-        batch = imputed[start:end]                          # (b, n_hours)
-
-        nan_mask = np.isnan(batch)
-        if not nan_mask.any():
-            continue
-
-        # fill NaN positions with per-hour mean before scaling
-        batch_filled = np.where(nan_mask, scaler.mean_, batch).astype(np.float32)
-        batch_scaled = scaler.transform(batch_filled).astype(np.float32)
-
-        xb   = torch.tensor(batch_scaled)
-        mb   = torch.tensor(nan_mask.astype(np.float32))   # 1 = was NaN → predict this
-
-        with torch.no_grad():
-            recon_scaled = model(xb, mb).numpy()            # (b, n_hours)
-
-        recon = scaler.inverse_transform(recon_scaled)
-
-        # write back only originally missing positions
-        batch[nan_mask] = recon[nan_mask]
-        imputed[start:end] = batch
-
-    # ------------------------------------------------------------------ #
-    # 6.  Rebuild daily totals                                            #
-    # ------------------------------------------------------------------ #
-
-    imputed = np.maximum(imputed, 0)                        # no negative sales
-    recovered_daily = outside_slice + imputed.sum(axis=1)
-
-    print(f"Imputed hourly cells    : {int(np.isnan(op_sales_masked).sum()):,}")
-    return recovered_daily
-
-def transformer(train, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_layers=2, d_ff=64, epochs=20, lr=3e-4, batch_size=256, device=None):
-    """
-    Imputes censored (NaN) hourly cells in op_sales_masked using an
-    encoder-only Transformer trained only on observed (non-NaN) hours.
-
-    Mirrors the signature of global_mean():
-      - train         : DataFrame with covariates + sale_amount
-      - op_sales_masked : (N, 16) float32 array, NaN where stockout
-      - outside_slice   : (N,)    float32 array, sales outside h06-h21
-
-    Writes train["recovered_daily_sales_transformer"] and returns imputed.
+    Imputes censored (NaN) hourly cells in op_sales_masked_train/val using an
+    encoder-only Transformer trained ONLY on train's observed (non-NaN) hours,
+    then applied for inference on both train and val.
     """
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    N, H = op_sales_masked.shape   # (N_rows, 16 hours)
+    H = op_sales_masked_train.shape[1]
 
-    # 1. Build covariates matrix  (N, H, C)
-    # Broadcast daily scalars to every hour slot so each token is self-contained
-    hour_idx   = np.tile(np.arange(H), (N, 1)).astype(np.float32) / (H - 1)  # (N,16) normalised 0-1
-    discount   = np.repeat(train["discount"].values[:, None],          H, axis=1).astype(np.float32)
-    holiday    = np.repeat(train["holiday_flag"].values[:, None],      H, axis=1).astype(np.float32)
-    activity   = np.repeat(train["activity_flag"].values[:, None],     H, axis=1).astype(np.float32)
-    temperature= np.repeat(train["avg_temperature"].values[:, None],   H, axis=1).astype(np.float32)
-    humidity   = np.repeat(train["avg_humidity"].values[:, None],      H, axis=1).astype(np.float32)
-    precpt     = np.repeat(train["precpt"].values[:, None],            H, axis=1).astype(np.float32)
+    def build_covariates(df, N):
+        hour_idx = np.tile(np.arange(H), (N, 1)).astype(np.float32) / (H - 1)
+        discount = np.repeat(df["discount"].values[:, None], H, axis=1).astype(np.float32)
+        holiday = np.repeat(df["holiday_flag"].values[:, None], H, axis=1).astype(np.float32)
+        activity = np.repeat(df["activity_flag"].values[:, None], H, axis=1).astype(np.float32)
+        temperature = np.repeat(df["avg_temperature"].values[:, None], H, axis=1).astype(np.float32)
+        humidity = np.repeat(df["avg_humidity"].values[:, None], H, axis=1).astype(np.float32)
+        precpt = np.repeat(df["precpt"].values[:, None], H, axis=1).astype(np.float32)
+        return hour_idx, discount, holiday, activity, temperature, humidity, precpt
 
-    # Normalise continuous covariates
-    def norm(x):
+    N_train = len(train)
+    N_val = len(val)
+
+    hour_idx_tr, discount_tr, holiday_tr, activity_tr, temp_tr, hum_tr, precpt_tr = build_covariates(train, N_train)
+    hour_idx_v, discount_v, holiday_v, activity_v, temp_v, hum_v, precpt_v = build_covariates(val, N_val)
+
+    # Normalisation stats fit on TRAIN only, applied to both
+    def fit_norm(x):
         mu, sigma = x.mean(), x.std() + 1e-8
+        return mu, sigma
+
+    def apply_norm(x, mu, sigma):
         return (x - mu) / sigma
 
-    covariates = np.stack([
-        hour_idx,
-        norm(discount),
-        holiday,
-        activity,
-        norm(temperature),
-        norm(humidity),
-        norm(precpt),
-    ], axis=-1)                                      # (N, 16, 7)
-    C = covariates.shape[-1]
+    mu_d, sd_d = fit_norm(discount_tr)
+    mu_t, sd_t = fit_norm(temp_tr)
+    mu_h, sd_h = fit_norm(hum_tr)
+    mu_p, sd_p = fit_norm(precpt_tr)
 
-    # 2. Normalise sales on observed hours only
-    observed_vals = op_sales_masked[~np.isnan(op_sales_masked)]
+    covariates_train = np.stack([
+        hour_idx_tr, apply_norm(discount_tr, mu_d, sd_d), holiday_tr, activity_tr,
+        apply_norm(temp_tr, mu_t, sd_t), apply_norm(hum_tr, mu_h, sd_h), apply_norm(precpt_tr, mu_p, sd_p),
+    ], axis=-1)  # (N_train, H, C)
+
+    covariates_val = np.stack([
+        hour_idx_v, apply_norm(discount_v, mu_d, sd_d), holiday_v, activity_v,
+        apply_norm(temp_v, mu_t, sd_t), apply_norm(hum_v, mu_h, sd_h), apply_norm(precpt_v, mu_p, sd_p),
+    ], axis=-1)  # (N_val, H, C)
+
+    C = covariates_train.shape[-1]
+
+    # Sales normalisation stats fit on TRAIN's observed hours only
+    observed_vals = op_sales_masked_train[~np.isnan(op_sales_masked_train)]
     sale_mean = observed_vals.mean()
-    sale_std  = observed_vals.std() + 1e-8
+    sale_std = observed_vals.std() + 1e-8
 
-    sales_norm = (op_sales_masked - sale_mean) / sale_std    # NaN preserved
-    obs_mask   = ~np.isnan(sales_norm)                       # True = observed
+    sales_norm_train = (op_sales_masked_train - sale_mean) / sale_std
+    obs_mask_train = ~np.isnan(sales_norm_train)
+    sales_input_train = np.nan_to_num(sales_norm_train, nan=0.0).astype(np.float32)
 
-    # Replace NaN with 0 for tensor input (model sees mask, not NaN)
-    sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
-
-    # 3. Tensors
-    T_sales = torch.tensor(sales_input,    dtype=torch.float32)   # (N, H)
-    T_cov   = torch.tensor(covariates,     dtype=torch.float32)   # (N, H, C)
-    T_obs   = torch.tensor(obs_mask,       dtype=torch.bool)      # (N, H)
-    T_tgt   = torch.tensor(sales_norm.copy().astype(np.float32))  # (N, H)  NaN in stockout
+    T_sales = torch.tensor(sales_input_train, dtype=torch.float32)
+    T_cov = torch.tensor(covariates_train, dtype=torch.float32)
+    T_obs = torch.tensor(obs_mask_train, dtype=torch.bool)
+    T_tgt = torch.tensor(sales_norm_train.copy().astype(np.float32))
 
     dataset = TensorDataset(T_sales, T_cov, T_obs, T_tgt)
-    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # 4. Model
     class HourlyTransformer(nn.Module):
         def __init__(self):
             super().__init__()
-            self.input_proj = nn.Linear(1 + C, d_model)   # sale + covariates → d_model
+            self.input_proj = nn.Linear(1 + C, d_model)
 
-            # Fixed sinusoidal positional encoding
             pe = torch.zeros(H, d_model)
             pos = torch.arange(H).unsqueeze(1).float()
             div = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
             pe[:, 0::2] = torch.sin(pos * div)
             pe[:, 1::2] = torch.cos(pos * div)
-            self.register_buffer("pe", pe.unsqueeze(0))   # (1, H, d_model)
+            self.register_buffer("pe", pe.unsqueeze(0))
 
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=d_model, nhead=n_heads, dim_feedforward=d_ff,
@@ -2515,26 +1733,23 @@ def transformer(train, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_
             self.head = nn.Linear(d_model, 1)
 
         def forward(self, sale, cov):
-            # sale: (B, H)   cov: (B, H, C)
-            x = torch.cat([sale.unsqueeze(-1), cov], dim=-1)  # (B, H, 1+C)
-            x = self.input_proj(x) + self.pe                  # (B, H, d_model)
-            x = self.encoder(x)                               # (B, H, d_model)
-            return self.head(x).squeeze(-1)                   # (B, H)
+            x = torch.cat([sale.unsqueeze(-1), cov], dim=-1)
+            x = self.input_proj(x) + self.pe
+            x = self.encoder(x)
+            return self.head(x).squeeze(-1)
 
     model = HourlyTransformer().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # 5. Train 
     print(f"Training transformer on {device}  |  params: {sum(p.numel() for p in model.parameters()):,}")
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss, epoch_tokens = 0.0, 0
         for sale, cov, obs, tgt in loader:
             sale, cov, obs, tgt = sale.to(device), cov.to(device), obs.to(device), tgt.to(device)
-            pred = model(sale, cov)             # (B, H)
+            pred = model(sale, cov)
 
-            # Censored loss: only backprop through observed hours
             if obs.sum() == 0:
                 continue
             loss = nn.functional.huber_loss(pred[obs], tgt[obs], delta=1.0)
@@ -2544,100 +1759,101 @@ def transformer(train, op_sales_masked, outside_slice, d_model=32, n_heads=4, n_
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            epoch_loss   += loss.item() * obs.sum().item()
+            epoch_loss += loss.item() * obs.sum().item()
             epoch_tokens += obs.sum().item()
 
         scheduler.step()
         if epoch % 5 == 0 or epoch == 1:
             print(f"  Epoch {epoch:02d}/{epochs}  loss={epoch_loss/max(epoch_tokens,1):.5f}")
 
-    # 6. Inference: fill NaN cells
-    model.eval()
-    all_preds = []
-    inf_loader = DataLoader(TensorDataset(T_sales, T_cov), batch_size=batch_size, shuffle=False)
-    with torch.no_grad():
-        for sale, cov in inf_loader:
-            pred = model(sale.to(device), cov.to(device))
-            all_preds.append(pred.cpu().numpy())
+    # Inference helper, used for both train and val
+    def infer(sales_masked, covariates):
+        sales_norm = (sales_masked - sale_mean) / sale_std
+        sales_input = np.nan_to_num(sales_norm, nan=0.0).astype(np.float32)
 
-    preds_norm = np.concatenate(all_preds, axis=0)                    # (N, H)
-    preds_denorm = (preds_norm * sale_std + sale_mean).clip(0)        # (N, H)
+        T_s = torch.tensor(sales_input, dtype=torch.float32)
+        T_c = torch.tensor(covariates, dtype=torch.float32)
 
-    # Only replace NaN (censored) cells; keep observed sales unchanged
-    imputed = op_sales_masked.copy()
-    nan_mask = np.isnan(imputed)
-    imputed_count = nan_mask.sum()
-    imputed[nan_mask] = preds_denorm[nan_mask]
+        model.eval()
+        all_preds = []
+        inf_loader = DataLoader(TensorDataset(T_s, T_c), batch_size=batch_size, shuffle=False)
+        with torch.no_grad():
+            for sale, cov in inf_loader:
+                pred = model(sale.to(device), cov.to(device))
+                all_preds.append(pred.cpu().numpy())
 
-    # 7. Rebuild daily totals 
-    recovered_sum   = np.nansum(imputed, axis=1)
-    recovered_daily = outside_slice + recovered_sum
+        preds_norm = np.concatenate(all_preds, axis=0)
+        preds_denorm = (preds_norm * sale_std + sale_mean).clip(0)
 
-    print(f"Imputed {imputed_count:,} hourly cells")
-    return recovered_daily
+        imputed = sales_masked.copy()
+        nan_mask = np.isnan(imputed)
+        imputed[nan_mask] = preds_denorm[nan_mask]
+        return imputed, nan_mask.sum()
 
-def diffusion(train, op_sales_masked, outside_slice, noise_scale=0.1, n_samples=5, random_state=42):  # Diffusion-like Recovery - Laura
+    imputed_train, imputed_count_train = infer(op_sales_masked_train, covariates_train)
+    imputed_val, imputed_count_val = infer(op_sales_masked_val, covariates_val)
 
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
+
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_transformer")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_transformer")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
+
+def diffusion(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, noise_scale=0.1, n_samples=5, random_state=42):
+    # Diffusion-like Recovery - Laura
     print("\n=== Diffusion-like Recovery ===")
-
-    start_total = time.time()
 
     rng = np.random.default_rng(random_state)
 
-    imputed = op_sales_masked.copy()
+    imputed_train = op_sales_masked_train.copy()
+    imputed_val = op_sales_masked_val.copy()
 
-    imputed_count = np.isnan(imputed).sum()
+    imputed_count_train = np.isnan(imputed_train).sum()
+    imputed_count_val = np.isnan(imputed_val).sum()
 
-    print(f"Matrix shape: {imputed.shape}")
-    print(f"Missing values: {imputed_count:,}")
+    print(f"Matrix shape (train): {imputed_train.shape}")
+    print(f"Matrix shape (val): {imputed_val.shape}")
+    print(f"Missing values (train): {imputed_count_train:,}")
+    print(f"Missing values (val): {imputed_count_val:,}")
     print(f"Number of samples: {n_samples}")
     print(f"Noise scale: {noise_scale}")
 
-    # ------------------------------------------------------------
-    # 1. Stundenmittel und Stundenstandardabweichung berechnen
-    # ------------------------------------------------------------
-
-    hour_mean = np.nanmean(imputed, axis=0)
-    hour_std = np.nanstd(imputed, axis=0)
-
-    # Falls std 0 oder NaN ist
+    # Hour mean/std fit on TRAIN only
+    hour_mean = np.nanmean(imputed_train, axis=0)
+    hour_std = np.nanstd(imputed_train, axis=0)
     hour_std = np.where(np.isnan(hour_std) | (hour_std == 0), 1e-6, hour_std)
 
-    nan_mask = np.isnan(imputed)
+    def sample_fill(imputed, nan_mask):
+        sampled_values = [
+            np.maximum(hour_mean + rng.normal(loc=0, scale=noise_scale, size=imputed.shape) * hour_std, 0)
+            for _ in range(n_samples)
+        ]
+        generated = np.mean(sampled_values, axis=0)
+        imputed = imputed.copy()
+        imputed[nan_mask] = generated[nan_mask]
+        return imputed
 
-    # ------------------------------------------------------------
-    # 2. Mehrere plausible Werte sampeln
-    # ------------------------------------------------------------
+    nan_mask_train = np.isnan(imputed_train)
+    nan_mask_val = np.isnan(imputed_val)
 
-    sampled_values = []
+    imputed_train = sample_fill(imputed_train, nan_mask_train)
+    imputed_val = sample_fill(imputed_val, nan_mask_val)
 
-    for i in range(n_samples):
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-        noise = rng.normal(loc=0, scale=noise_scale, size=imputed.shape)
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
 
-        sample = hour_mean + noise * hour_std
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_diffusion")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_diffusion")
 
-        sample = np.maximum(sample, 0)
-
-        sampled_values.append(sample)
-
-    # Durchschnitt der Samples
-    generated = np.mean(sampled_values, axis=0)
-
-    # Nur fehlende Werte ersetzen
-    imputed[nan_mask] = generated[nan_mask]
-
-    # ------------------------------------------------------------
-    # 3. Rebuild corrected daily target
-    # ------------------------------------------------------------
-
-    recovered_sum = np.nansum(imputed, axis=1)
-
-    recovered_daily = outside_slice + recovered_sum
-
-    print(f"Imputed {imputed_count:,} hourly cells")
-    return recovered_daily
-
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()
 
 # DLinear (Nils)
 class MovingAvg(nn.Module):
@@ -2724,7 +1940,7 @@ class DLinear(nn.Module):
         out = seasonal + trend
 
         return out
-    
+
 class RecoveryDataset(Dataset):
     """
     Creates training samples for demand recovery.
@@ -2740,7 +1956,7 @@ class RecoveryDataset(Dataset):
         Probability that an observed hour is hidden.
     """
 
-    def __init__(self, hourly_sales, mask_prob=0.30, keep_min_hours=8,):
+    def __init__(self, hourly_sales, mask_prob=0.30, keep_min_hours=8):
 
         self.hourly_sales = hourly_sales.astype(np.float32)
         self.mask_prob = mask_prob
@@ -2771,110 +1987,94 @@ class RecoveryDataset(Dataset):
 
         return (torch.from_numpy(x), torch.from_numpy(target))
 
-def dlinear_train(train, op_sales, op_sales_masked, epochs=50, batch_size=256, lr=1e-3, mask_prob=0.30, device=None, random_state=42):
-    hourly_sales = op_sales.copy()
-
-    # Keep only complete days
-    complete_days = ~np.isnan(hourly_sales).any(axis=1)
-
-    train_data = hourly_sales[complete_days]
-        
+def dlinear_train(op_sales_masked_train, epochs=50, batch_size=256, lr=1e-3,
+                   mask_prob=0.30, device=None, model_path="dlinear_model.pt"):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Keep only complete days
-    complete_days = ~np.isnan(op_sales_masked).any(axis=1)
-
-    train_data = op_sales_masked[complete_days]
+    # Keep only complete (fully-observed) days from train for supervised training
+    complete_days = ~np.isnan(op_sales_masked_train).any(axis=1)
+    train_data = op_sales_masked_train[complete_days]
 
     print(f"Training days: {len(train_data):,}")
 
     dataset = RecoveryDataset(train_data, mask_prob=mask_prob)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False,)
-
-    # Model
-    seq_len = hourly_sales.shape[1]
+    seq_len = op_sales_masked_train.shape[1]
     model = DLinear(seq_len=seq_len)
-
     model.to(device)
 
     criterion = nn.MSELoss()
-
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # Training
     model.train()
-
     for epoch in range(epochs):
-
         running_loss = 0.0
-
         for x, y in loader:
-
             x = x.to(device)
             y = y.to(device)
 
             optimizer.zero_grad()
-
             pred = model(x)
-
             loss = criterion(pred, y)
-
             loss.backward()
-
             optimizer.step()
 
             running_loss += loss.item() * len(x)
 
         epoch_loss = running_loss / len(dataset)
-
         print(f"Epoch {epoch+1:3d}/{epochs} | Loss = {epoch_loss:.5f}")
 
-    # Save model
-    model_path="dlinear_model.pt"
     torch.save(model.state_dict(), model_path)
     print(f"\nModel saved to '{model_path}'")
 
     return model
 
-def dlinear(train, op_sales, op_sales_masked, outside_slice):
+def dlinear(train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val, model_path="dlinear_model.pt"):
     """
-    Recover hourly demand using a pretrained DLinear model.
+    Recover hourly demand using a DLinear model, trained on train only.
     """
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = DLinear()
-    if os.path.exists("dlinear_model.pt"):
-        model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
-    else:
-        model = dlinear_train(train, op_sales, op_sales_masked)
+    seq_len = op_sales_masked_train.shape[1]
+    model = DLinear(seq_len=seq_len)
 
-    model.load_state_dict(torch.load("dlinear_model.pt", map_location=device))
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path, map_location=device))
+    else:
+        model = dlinear_train(op_sales_masked_train, model_path=model_path)
+
     model.to(device)
     model.eval()
 
-    imputed = op_sales_masked.copy()
-    nan_mask = np.isnan(imputed)
+    def impute(op_sales_masked):
+        imputed = op_sales_masked.copy()
+        nan_mask = np.isnan(imputed)
 
-    # DLinear cannot handle NaNs
-    model_input = np.nan_to_num(imputed, nan=0.0)
+        # DLinear cannot handle NaNs
+        model_input = np.nan_to_num(imputed, nan=0.0)
+        x = torch.tensor(model_input, dtype=torch.float32, device=device)
 
-    x = torch.tensor(model_input, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            prediction = model(x).cpu().numpy()
 
-    # predict
-    with torch.no_grad():
-        prediction = model(x).squeeze(1).cpu().numpy()
+        imputed[nan_mask] = prediction[nan_mask]
+        imputed = np.maximum(imputed, 0)
+        return imputed, nan_mask.sum()
 
-    # impute
-    imputed[nan_mask] = prediction[nan_mask]
-    imputed = np.maximum(imputed, 0)
+    imputed_train, imputed_count_train = impute(op_sales_masked_train)
+    imputed_val, imputed_count_val = impute(op_sales_masked_val)
 
-    # daily recovery
-    recovered_sum = np.sum(imputed, axis=1)
+    recovered_daily_train = outside_slice_train + np.nansum(imputed_train, axis=1)
+    recovered_daily_val = outside_slice_val + np.nansum(imputed_val, axis=1)
 
-    recovered_daily = outside_slice + recovered_sum
+    print(f"Imputed {imputed_count_train:,} hourly cells (train)")
+    print(f"Imputed {imputed_count_val:,} hourly cells (val)")
+    print(f"recovered_daily_train_mean: {np.nanmean(recovered_daily_train):.4f}")
+    print(f"recovered_daily_val_mean: {np.nanmean(recovered_daily_val):.4f}")
 
-    print(f"Imputed {nan_mask.sum():,} hourly cells")
-    return recovered_daily
+    recovered_train_series = pd.Series(recovered_daily_train, index=train.index, name="recovered_daily_sales_dlinear")
+    recovered_val_series = pd.Series(recovered_daily_val, index=val.index, name="recovered_daily_sales_dlinear")
+
+    return pd.concat([recovered_train_series, recovered_val_series]).sort_index()

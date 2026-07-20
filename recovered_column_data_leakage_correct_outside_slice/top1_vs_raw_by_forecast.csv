@@ -1,0 +1,7 @@
+forecast_method,type,recovery,wape_overall,wape_low_sale,wape_high_sale,harmonic_mean,scored_rows
+rolling_28d_forecast,top1 recovery,series_mean,0.3454,0.4123,0.2937,0.3438,198987.0
+rolling_28d_forecast,raw_sales,raw_sales,0.3637,0.4143,0.3247,0.3639,198987.0
+seasonal_naive_forecast,top1 recovery,series_daily_mean,0.3695,0.4559,0.3027,0.3657,198987.0
+seasonal_naive_forecast,raw_sales,raw_sales,0.3976,0.483,0.3317,0.3947,198987.0
+global_mean_forecast,top1 recovery,series_daily_mean,0.3753,0.4348,0.3293,0.375,198987.0
+global_mean_forecast,raw_sales,raw_sales,0.4336,0.4508,0.4203,0.4345,198987.0

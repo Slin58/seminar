@@ -1,1 +1,27 @@
-{"recovered_daily_sales_global_mean": 2.294914}
+{
+    "recovered_daily_sales_global_mean": 1.392855,
+    "recovered_daily_sales_hourly_mean": 1.393977,
+    "recovered_daily_sales_series_mean": 2.81693,
+    "recovered_daily_sales_weekday_mean": 3.187792,
+    "recovered_daily_sales_rolling_mean": 5.163759,
+    "recovered_daily_sales_random_sampling": 2.74923,
+    "recovered_daily_sales_series_daily_mean": 0.647571,
+    "recovered_daily_sales_weekday_daily_mean": 1.035412,
+    "recovered_daily_sales_exponential_moving_average": 3.586972,
+    "recovered_daily_sales_exponential_moving_average_series": 229.152638,
+    "recovered_daily_sales_interpolation_linear": 7.92794,
+    "recovered_daily_sales_interpolation_spline": 15.064777,
+    "recovered_daily_sales_interpolation_spline_series": 582.786698,
+    "recovered_daily_sales_interpolation_polynomial": 13.761984,
+    "recovered_daily_sales_kalman_like": 4.109292,
+    "recovered_daily_sales_stl_real": 4710.088157,
+    "recovered_daily_sales_stl_based": 28.193336,
+    "recovered_daily_sales_random_forest": 66.321095,
+    "recovered_daily_sales_lightgbm": 76.427211,
+    "recovered_daily_sales_xgboost": 53.608367,
+    "recovered_daily_sales_iterative": 5511.200788,
+    "recovered_daily_sales_transformer": 4716.497036,
+    "recovered_daily_sales_diffusion": 13.874871,
+    "recovered_daily_sales_autoencoder": 2546.617914,
+    "recovered_daily_sales_lightgbm_v2": 503.038582
+}

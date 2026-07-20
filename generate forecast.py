@@ -16,9 +16,9 @@ history = utils.prepare_panel(train_raw)
 history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
-
+    
 # 2. Alle Recovery-Werte laden
-recovery_folder = "recovered_column_data_leakage_correct_outside_slice" 
+recovery_folder = "recovered_column" 
 
 for datei in os.listdir(recovery_folder):
     if datei.endswith(".npy"):
@@ -81,13 +81,14 @@ forecast_models = {
     #"dlinear_forecast": forecast.dlinear
     }
 
-recovery_models = [] # if list empty all recovery methods are used
+recovery_models = ["sale_amount"] # if list empty all recovery methods are used
 #recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
 # 4. Forecasts zu allen Recovery Werten ausführen
+predictions_folder = "predictions"
 all_results = {}
 
-with open(f"{recovery_folder}/results.json", "r") as f:
+with open(f"{predictions_folder}/results.json", "r") as f:
     content = f.read()
     all_results = json.loads(content) if content.strip() else {}
 
@@ -103,20 +104,7 @@ for forecast_name, forecast_func in forecast_models.items():
             if name == "sale_amount":
                 name = "raw_sales"
 
-            # TODO nicht überschreiben von vorhandenen Werten, nur wenn nicht vorhanden
-
             result_name = f"{name} + {forecast_name}"
-
-            # pred_folder = "forecast_predictions" # TODO Ensembles
-            # os.makedirs(pred_folder, exist_ok=True)
-
-            # pred_name = result_name.replace(" ", "_").replace("+", "plus").replace("/", "_")
-            # pred_path = f"{pred_folder}/{pred_name}.npy"
-
-            # if result_name in all_results and os.path.exists(pred_path):
-            #     print(f"Skip: {result_name}")
-            #     continue
-
 
             # Bereits vorhanden -> überspringen
             if result_name in all_results:
@@ -129,17 +117,9 @@ for forecast_name, forecast_func in forecast_models.items():
 
             val_pred = forecast_func(train_df=train_r, val_df=val_r, recovery_col=col) 
             
-            # Prediction speichern für spätere Ensembles:
-            # 
-            # pred_folder = "forecast_predictions"
-            # os.makedirs(pred_folder, exist_ok=True)
-
-            # pred_name = result_name.replace(" ", "_").replace("+", "plus").replace("/", "_")
-
-            # np.save(
-            #     f"{pred_folder}/{pred_name}.npy",
-            #     val_pred["prediction"].to_numpy()
-            # )
+            # Vorhersagen speichern
+            prediction_name = result_name.replace(" ", "").replace("/", "_")
+            np.save(f"{predictions_folder}/{prediction_name}.npy", val_pred["prediction"].to_numpy())
 
             all_results[result_name] = utils.evaluate_forecast(val_pred)
 
@@ -149,14 +129,14 @@ for forecast_name, forecast_func in forecast_models.items():
             print(f"Finished: {result_name} ({datetime.now() - current_time})")
 
     if counter > 0:
-        with open(f"{recovery_folder}/forecast_processing_time.json", "r") as f:
+        with open(f"{predictions_folder}/forecast_processing_time.json", "r") as f:
             content = f.read()
             time = json.loads(content) if content.strip() else {}
 
         time[forecast_name] = processing_time.total_seconds() / counter
-        with open(f"{recovery_folder}/forecast_processing_time.json", "w") as f:
+        with open(f"{predictions_folder}/forecast_processing_time.json", "w") as f:
             json.dump(time, f) 
 
 
-with open(f"{recovery_folder}/results.json", "w") as f:
+with open(f"{predictions_folder}/results.json", "w") as f:
     json.dump(all_results, f)
