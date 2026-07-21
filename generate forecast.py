@@ -36,52 +36,51 @@ train_r, val_r = utils.time_split(history, horizon=7)
 print("Forecasting")
 
 forecast_models = {
-    ##"global_mean_forecast": forecast.global_mean,
-    ##"seasonal_naive_forecast": forecast.seasonal_naive,
-    ##"rolling_28d_forecast": forecast.rolling_28d,
-    #"single_exponential_smoothing": forecast.single_exponential_smoothing,
-    #"double_exponential_smoothing": forecast.double_exponential_smoothing,
-    #"triple_exponential_smoothing": forecast.triple_exponential_smoothing,
-    #"simple_exponential_smoothing": forecast.simple_exponential_smoothing,
+    "global_mean_forecast": forecast.global_mean,
+    "seasonal_naive_forecast": forecast.seasonal_naive,
+    "rolling_28d_forecast": forecast.rolling_28d,
+    "single_exponential_smoothing": forecast.single_exponential_smoothing,
+    "double_exponential_smoothing": forecast.double_exponential_smoothing,
+    "triple_exponential_smoothing": forecast.triple_exponential_smoothing,
+    "simple_exponential_smoothing": forecast.simple_exponential_smoothing,
     #"holt_winters_exp_forecast": forecast.holt_winters_exp_forecast,
-    #"exponential_smoothing_forecast": forecast.exponential_smoothing,
     #"arima_forecast": forecast.arima, # 
-    #"arima_like_fast": forecast.arima_like_fast,
-    ##"arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
-    "lightgbm_forecast": forecast.lightgbm_forecast,
-    #"xgboost_forecast": forecast.xgboost_forecast,
+    "arima_like_fast": forecast.arima_like_fast,
+    "arima_like_fast_vectorized": forecast.arima_like_fast_vectorized,
     #"random_forest_forecast": forecast.random_forest_forecast,
     #"random_forest_forecast_optimized": forecast.random_forest_forecast_optimized,
-    #"random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
+    "random_forest_forecast_feature_optimized": forecast.random_forest_forecast_feature_optimized,
     #"cnn_forecast": forecast.cnn_forecast,
-    #"cnn_forecast_fast": forecast.cnn_forecast_fast,
+    "cnn_forecast_fast": forecast.cnn_forecast_fast,
     #"cnn_forecast_balanced": forecast.cnn_forecast_balanced,
     #"cnn_forecast_3epochs": forecast.cnn_forecast_3epochs,
     #"cnn_forecast_original_3epochs": forecast.cnn_forecast_original_3epochs,
-    #"lstm_forecast": forecast.lstm_forecast,
-    #"lstm_forecast_fast": forecast.lstm_forecast_fast, 
-    #"catboost_forecast": forecast.catboost_forecast, # TODO Potenzial
+    "lstm_forecast": forecast.lstm_forecast,
+    "lstm_forecast_fast": forecast.lstm_forecast_fast, 
+    "catboost_forecast": forecast.catboost_forecast, # TODO Potenzial
     #"catboost_forecast_fast": forecast.catboost_forecast_fast,
     #"catboost_forecast_optimized": forecast.catboost_forecast_optimized,
     #"catboost_forecast_optimized_v2": forecast.catboost_forecast_optimized_v2, # lädt zu lange
     #"catboost_forecast_fast_numeric_v2": forecast.catboost_forecast_fast_numeric_v2,
+    "lightgbm_forecast": forecast.lightgbm_forecast,
     #"lightgbm_forecast_optimized": forecast.lightgbm_forecast_optimized,
     #"lightgbm_forecast_feature_optimized": forecast.lightgbm_forecast_feature_optimized, # TODO Potenzial
     #"lightgbm_forecast_feature_optimized_v2": forecast.lightgbm_forecast_feature_optimized_v2,
-    #"lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
+    "lightgbm_forecast_feature_optimized_v3": forecast.lightgbm_forecast_feature_optimized_v3, # bestes
     #"lightgbm_forecast_feature_optimized_v4": forecast.lightgbm_forecast_feature_optimized_v4,
     #"lightgbm_forecast_feature_optimized_v5": forecast.lightgbm_forecast_feature_optimized_v5,
     #"lightgbm_forecast_feature_optimized_v6_feature_selection": forecast.lightgbm_forecast_feature_optimized_v6_feature_selection,
-        # infos siehe dokument
-    #"xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
+        #infos siehe dokument
+    "xgboost_forecast": forecast.xgboost_forecast,
+    "xgboost_forecast_feature_optimized": forecast.xgboost_forecast_feature_optimized, # TODO Potenzial
     #"xgboost_forecast_feature_fast": forecast.xgboost_forecast_feature_fast,
-    #"hist_gradient_boosting_forecast": forecast.hist_gradient_boosting_forecast,
-    #"hist_gradient_boosting_forecast_optimized": forecast.hist_gradient_boosting_forecast_optimized, # TODO Potenzial
-    #"extra_trees_forecast": forecast.extra_trees_forecast,
-    #"dlinear_forecast": forecast.dlinear
+    "hist_gradient_boosting_forecast": forecast.hist_gradient_boosting_forecast,
+    "hist_gradient_boosting_forecast_optimized": forecast.hist_gradient_boosting_forecast_optimized, # TODO Potenzial
+    "extra_trees_forecast": forecast.extra_trees_forecast,
+    "dlinear_forecast": forecast.dlinear
     }
 
-recovery_models = [] # if list empty all recovery methods are used
+recovery_models = ["recovered_daily_sales_stl_real", "recovered_daily_sales_interpolation_linear", "recovered_daily_sales_exponential_moving_average_series", "recovered_daily_sales_series_mean", "sale_amount"] # if list empty all recovery methods are used
 #recovery_models = ["recovered_daily_sales_stl_real", "sale_amount", "recovered_daily_sales_lightgbm_v2", "recovered_daily_sales_lightgbm", "recovered_daily_sales_dlinear"] # if list empty all recovery methods are used
 
 # 4. Forecasts zu allen Recovery Werten ausführen
@@ -128,6 +127,9 @@ for forecast_name, forecast_func in forecast_models.items():
 
             print(f"Finished: {result_name} ({datetime.now() - current_time})")
 
+            with open(f"{predictions_folder}/results.json", "w") as f:
+                json.dump(all_results, f)
+
     if counter > 0:
         with open(f"{predictions_folder}/forecast_processing_time.json", "r") as f:
             content = f.read()
@@ -138,5 +140,4 @@ for forecast_name, forecast_func in forecast_models.items():
             json.dump(time, f) 
 
 
-with open(f"{predictions_folder}/results.json", "w") as f:
-    json.dump(all_results, f)
+

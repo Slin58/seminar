@@ -1,6 +1,10 @@
 forecast_method,type,recovery,wape_overall,wape_low_sale,wape_high_sale,harmonic_mean,scored_rows
 lightgbm_forecast,top1 recovery,stl_real,0.2883,0.3577,0.2347,0.285,198987.0
 lightgbm_forecast,raw_sales,raw_sales,0.2975,0.3614,0.2481,0.2953,198987.0
+single_exponential_smoothing,top1 recovery,kalman_like,0.3289,0.4082,0.2676,0.3252,198987.0
+single_exponential_smoothing,raw_sales,raw_sales,0.3407,0.4039,0.2917,0.3394,198987.0
+double_exponential_smoothing,top1 recovery,series_mean,0.3455,0.4412,0.2715,0.3392,198987.0
+double_exponential_smoothing,raw_sales,raw_sales,0.3531,0.428,0.2951,0.3506,198987.0
 rolling_28d_forecast,top1 recovery,stl_real,0.3453,0.4091,0.2959,0.344,198987.0
 rolling_28d_forecast,raw_sales,raw_sales,0.3637,0.4143,0.3247,0.3639,198987.0
 seasonal_naive_forecast,top1 recovery,kalman_like,0.3769,0.4857,0.2929,0.3692,198987.0
