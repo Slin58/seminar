@@ -1,8 +1,12 @@
 forecast_method,type,recovery,wape_overall,wape_low_sale,wape_high_sale,harmonic_mean,scored_rows
 lightgbm_forecast,top1 recovery,stl_real,0.2883,0.3577,0.2347,0.285,198987.0
 lightgbm_forecast,raw_sales,raw_sales,0.2975,0.3614,0.2481,0.2953,198987.0
+simple_exponential_smoothing,top1 recovery,exponential_moving_average_series,0.3281,0.4158,0.2603,0.3228,198987.0
+simple_exponential_smoothing,raw_sales,raw_sales,0.338,0.407,0.2847,0.336,198987.0
 single_exponential_smoothing,top1 recovery,kalman_like,0.3289,0.4082,0.2676,0.3252,198987.0
 single_exponential_smoothing,raw_sales,raw_sales,0.3407,0.4039,0.2917,0.3394,198987.0
+triple_exponential_smoothing,top1 recovery,series_mean,0.3348,0.4136,0.2738,0.3312,198987.0
+triple_exponential_smoothing,raw_sales,raw_sales,0.3671,0.4327,0.3164,0.3661,198987.0
 double_exponential_smoothing,top1 recovery,series_mean,0.3455,0.4412,0.2715,0.3392,198987.0
 double_exponential_smoothing,raw_sales,raw_sales,0.3531,0.428,0.2951,0.3506,198987.0
 rolling_28d_forecast,top1 recovery,stl_real,0.3453,0.4091,0.2959,0.344,198987.0
@@ -13,3 +17,5 @@ global_mean_forecast,top1 recovery,series_daily_mean,0.3905,0.4448,0.3484,0.3907
 global_mean_forecast,raw_sales,raw_sales,0.4336,0.4508,0.4203,0.4345,198987.0
 arima_like_fast_vectorized,top1 recovery,series_daily_mean,0.4685,0.573,0.3877,0.4645,198987.0
 arima_like_fast_vectorized,raw_sales,raw_sales,0.505,0.6288,0.4093,0.4989,198987.0
+arima_like_fast,top1 recovery,exponential_moving_average_series,0.4948,0.6566,0.3698,0.4801,198987.0
+arima_like_fast,raw_sales,raw_sales,0.505,0.6288,0.4093,0.4989,198987.0
