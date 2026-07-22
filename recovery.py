@@ -336,7 +336,7 @@ def interpolation_spline(train, op_sales_masked, outside_slice, order=3):  # Spl
     return recovered_daily
 
 
-def interpolation_spline_series(train, op_sales_masked, outside_slice, order=3): # TODO -> Nils durchlaufen lassen
+def interpolation_spline_series(train, op_sales_masked, outside_slice, order=3): # 
     imputed = op_sales_masked.copy()
     imputed_count = np.isnan(imputed).sum()
 
@@ -584,7 +584,7 @@ def stl_based(train, op_sales_masked, outside_slice, period=7):
 
 # ML-basierte Recovery-Methoden: - Laura
 
-def knn(train, op_sales_masked, outside_slice, n_neighbors=5):  # TODO Laura KNN-Imputation - Laura
+def knn(train, op_sales_masked, outside_slice, n_neighbors=5):  
 
     imputed = op_sales_masked.copy()
 
@@ -1155,7 +1155,7 @@ def xgboost(train, op_sales_masked, outside_slice, max_train_rows=500_000, batch
 
     return recovered_daily
 
-def iterative(train, op_sales_masked, outside_slice, max_iter=5, random_state=42):  # TODO Laura Iterative Imputation / MICE - Laura
+def iterative(train, op_sales_masked, outside_slice, max_iter=5, random_state=42):  
 
     print("\n=== Iterative Imputation Recovery ===")
 
@@ -1223,7 +1223,7 @@ def iterative_improved(train, op_sales_masked, outside_slice, max_iter=5, random
 
 # Spezifische Demandrevovery Modelle: - Nils
 
-def tobit(train): # TODO
+def tobit(train): 
     # ---------- FEATURES ----------
     hours_matrix = np.vstack(train["hours_sale"].values)
 
@@ -1810,7 +1810,7 @@ def autoencoder(train, op_sales_masked, outside_slice, latent_dim=8, epochs=20, 
 
 #def transformer(train): # SAITS, BRITS, GRIN, CSDI
 
-def transformer_old(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  # TODO Transformer-basierte Imputation - Laura
+def transformer_old(train, op_sales_masked, outside_slice, epochs=20, batch_size=1024, random_state=42):  
 
     print("\n=== Transformer Recovery ===")
     start_total = time.time()

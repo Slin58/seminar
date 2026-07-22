@@ -25,8 +25,6 @@ history = utils.prepare_panel(train_raw)
 history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
-# TODO Hier drunter sollte nur mit train (nicht history) gearbeitet werden, da sonst data leakage entsteht, da die recoveries auf dem gesamten history berechnet werden und somit auch die future values enthalten sind.
-
 history["datum"] = pd.to_datetime(history["dt"])
 history["weekday"] = history["datum"].dt.day_name()
 
@@ -44,8 +42,6 @@ missing_cells = np.isnan(op_sales_masked).sum()
 print(f"Operating window: {op_sales_masked.shape[1]} hours (h06-h21)")
 print(f"Missing hourly cells: {missing_cells:,} / {total_cells:,} ({missing_cells/total_cells:.1%})")
 
-#visible_sum = np.nansum(np.where(op_stock_status == 0, op_sales, 0), axis=1) # all sales where enough stock was available
-#outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - visible_sum, 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21) TODO möglicher Fehler Doppelzählung
 outside_slice = np.maximum(history["sale_amount"].values.astype(np.float32) - np.nansum(op_sales, axis=1), 0) # sales that are in sale_amount but not in hours_sale due to the time frame (6-21)
 
 RANDOM_SEED = 42
@@ -232,7 +228,6 @@ recovery_methods = {
     # Gespeichert: [2.3159428  0.55325204 5.3        ... 3.8        2.2        2.1       ]
     # Verarbeitungszeit:  0:13:23.918970
 }
-# TODO Kosten Nutzen?
 # knn über 3h
 # bayesian hat zu lange gedauert 
 # tobit: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT 

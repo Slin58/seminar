@@ -4893,9 +4893,3 @@ def dlinear(train_df, val_df, recovery_col, input_size=28, epochs=20, batch_size
     val_pred["prediction"] = predictions
 
     return val_pred
-
-# TODO 
-# HistGradientBoostingRegressor
-# XGBoost Feature Optimized
-# Extra Trees
-#(( Wenn Zeit keine Rolle spielen würde. Dann wären diese beiden noch spannend: PatchTST (aktueller Forschungsliebling für Zeitreihen) und N-HiTS / N-BEATS ))

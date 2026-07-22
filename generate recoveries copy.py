@@ -25,8 +25,6 @@ history = utils.prepare_panel(train_raw)
 history = utils.flag_censoring(history)
 history = utils.make_features(history)
 
-# TODO Hier drunter sollte nur mit train (nicht history) gearbeitet werden, da sonst data leakage entsteht, da die recoveries auf dem gesamten history berechnet werden und somit auch die future values enthalten sind.
-
 train, val = utils.time_split(history, horizon=7)
 
 train["datum"] = pd.to_datetime(train["dt"])
@@ -221,7 +219,7 @@ recovery_methods = {
     # Gespeichert: [2.3159428  0.55325204 5.3        ... 3.8        2.2        2.1       ]
     # Verarbeitungszeit:  0:13:23.918970
 }
-# TODO Kosten Nutzen?
+
 # knn über 3h
 # bayesian hat zu lange gedauert 
 # tobit: 0:42 h -> 0.5437, aber Converged: False | STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT 
