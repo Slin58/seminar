@@ -1216,7 +1216,7 @@ def lightgbm_forecast_feature_optimized_v3(train_df, val_df, recovery_col, rando
         "weekday_sin", "weekday_cos", "month_sin", "month_cos", "day_idx",
         "discount", "holiday_flag", "activity_flag",
         "avg_temperature", "avg_humidity", "avg_wind_level", "precpt",
-        "psd",
+        "psd", 
     ]
 
     feature_cols += [f"lag_{lag}" for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 21, 28, 35, 42, 56]]
