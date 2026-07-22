@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import utils
-import recovery_copy
+import recovery_new
 from datasets import load_dataset
 from pathlib import Path
 import torch
@@ -208,7 +208,7 @@ recovery_methods = {
     #     "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
     # },
     "dlinear": {
-        "func": recovery_copy.dlinear,
+        "func": recovery_new.dlinear,
         "args": (train, val, op_sales_masked_train, op_sales_masked_val, outside_slice_train, outside_slice_val),
     },          
     #=== LightGBM Recovery v2 Finished ===
