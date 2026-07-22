@@ -126,38 +126,48 @@ def double_exponential_smoothing(train_df, val_df, recovery_col):
     val_pred = val_df.copy()
 
     fallback = train_df[recovery_col].mean()
-    predictions = {}
+
+    predictions = []
 
     for series_id, train_series in train_df.groupby("series_id"):
 
         y = train_series[recovery_col].dropna().to_numpy()
 
-        if len(y) < 2:
-            predictions[series_id] = y.mean() if len(y) else fallback
+        val_series = (
+            val_pred[val_pred["series_id"] == series_id]
+            .sort_values("day_idx")
+            .copy()
+        )
+
+        horizon = len(val_series)
+
+        if horizon == 0:
             continue
 
-        try:
-            fit = Holt(y).fit(optimized=True)
+        if len(y) < 2:
+            pred = np.repeat(
+                y.mean() if len(y) else fallback,
+                horizon
+            )
 
-            alpha = fit.params["smoothing_level"]
-            beta = fit.params["smoothing_trend"]
+        else:
+            try:
+                fit = Holt(y).fit(optimized=True)
 
-            # print(f"series_id={series_id}, alpha={alpha:.4f}, beta={beta:.4f}"
+                pred = fit.forecast(horizon)
 
-            predictions[series_id] = float(fit.forecast(1)[0])
+            except Exception as e:
+                print(f"series_id={series_id}: {e}")
 
-        except Exception as e:
-            print(f"series_id={series_id}: {e}")
-            predictions[series_id] = y.mean()
+                pred = np.repeat(y.mean(), horizon)
 
-    val_pred["prediction"] = (
-        val_pred["series_id"]
-        .map(predictions)
-        .fillna(fallback)
-        .clip(lower=0)
-    )
+        val_series["prediction"] = np.clip(pred, 0, None)
 
-    return val_pred
+        predictions.append(val_series)
+
+    result = pd.concat(predictions, ignore_index=True)
+
+    return result.sort_index()
 
 def triple_exponential_smoothing(train_df, val_df, recovery_col, seasonal_periods=7):
 
